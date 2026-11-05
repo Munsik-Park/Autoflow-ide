@@ -75,3 +75,36 @@ def test_repository_from_workspace_errors(tmp_path, content):
         (tmp_path / "repo.json").write_text(content)
     with pytest.raises(IssueSourceError):
         repository_from_workspace(str(tmp_path))
+
+
+from autoflow_ide.issues import gh_issue, parse_issue
+
+CLOSED = (FIXTURES / "gh-issue-closed.json").read_text()
+OPEN = (FIXTURES / "gh-issue-open.json").read_text()
+
+
+def test_parse_recorded_issue():
+    closed, open_ = parse_issue(CLOSED), parse_issue(OPEN)
+    assert (closed.number, closed.state, closed.closed) == (3, "closed", True)
+    assert closed.title == "word_count miscounts empty text, repeated spaces and newlines"
+    assert (open_.number, open_.state, open_.closed) == (4, "open", False)
+
+
+@pytest.mark.parametrize("text", ["not json", "[]", '{"number": 3, "title": "no state"}'])
+def test_parse_unexpected_issue(text):
+    with pytest.raises(IssueSourceError, match="unexpected gh output"):
+        parse_issue(text)
+
+
+async def test_gh_issue_asks_the_rest_api(tmp_path, monkeypatch):
+    args = fake_gh(tmp_path, monkeypatch, stdout=CLOSED)
+    issue = await gh_issue("Munsik-Park/autoflow-sandbox", 3)
+    assert issue.closed
+    assert args.read_text().split()[:3] == ["api", "repos/Munsik-Park/autoflow-sandbox/issues/3", "--jq"]
+
+
+async def test_gh_issue_not_found(tmp_path, monkeypatch):
+    error_json = '{"message":"Not Found","status":"404"}'
+    fake_gh(tmp_path, monkeypatch, stdout=error_json, stderr="gh: Not Found (HTTP 404)\n", status=1)
+    with pytest.raises(IssueSourceError, match=r"gh: Not Found \(HTTP 404\)"):
+        await gh_issue("Munsik-Park/autoflow-sandbox", 999)
