@@ -165,17 +165,28 @@ class IdeApp(App):
             self.current = next(i for i in self.ordered() if i.number in started)
         self.render_issues()
         self.show_issue(self.current_in(self.issues))
-        self.set_message("runs", f"{len(runs)} active runs")
+        own = len(self.own_runs())
+        others = len(runs) - own
+        self.set_message("runs", f"{own} active runs" + (f" ({others} in other repositories)" if others else ""))
         if before - after:
             # A run ended: its issue may have been closed by the merge that ended it.
             self.action_refresh_issues()
 
+    def own_runs(self) -> List[Run]:
+        """The runs of this repository. status.py lists the active runs of every repository; the coordinator
+        names a run <repository name>-<issue>-<key>."""
+        if not self.repository:
+            return []
+        name = self.repository.split("/")[-1]
+        return [r for r in self.runs if r.issue and r.name.startswith(f"{name}-{r.issue}-")]
+
     def attach_runs(self) -> None:
-        """Each issue gets the first run that names it; status.py lists the most recently changed run first."""
+        """Each issue gets the first of its runs; status.py lists the most recently changed run first."""
         if not self.coordinator:
             return
+        runs = self.own_runs()
         for issue in self.issues:
-            issue.run = next((r for r in self.runs if r.issue == str(issue.number)), None)
+            issue.run = next((r for r in runs if r.issue == str(issue.number)), None)
 
     # Selection
 
