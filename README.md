@@ -20,7 +20,7 @@ The IDE uses the coordinator through its command-line tools and their output. It
 
 - Python 3.9 or later
 - tmux, with the IDE started inside it
-- [autoflow-coordinator](https://github.com/Munsik-Park/autoflow-coordinator) v0.7.0-rc1 and its requirements, including Claude Code and the AutoFlow plugin v0.7.0
+- [autoflow-coordinator](https://github.com/Munsik-Park/autoflow-coordinator) v0.7.0-rc2 and its requirements, including Claude Code and the AutoFlow plugin v0.7.0
 - `gh`, signed in, for the issue list
 
 ## Run
