@@ -49,7 +49,7 @@ The IDE works against fixed versions of autoflow-coordinator and AutoFlow, as th
 
 | Repository | Supported version |
 |---|---|
-| autoflow-coordinator | v0.7.0-rc1 (`VERSION` 0.7.0-rc1) |
+| autoflow-coordinator | v0.7.0-rc2 (`VERSION` 0.7.0-rc2) |
 | autoflow | v0.7.0, the version that coordinator supports |
 
 With `--coordinator`, the IDE reads the clone's `VERSION` and shows on the status line when it differs from the supported one.

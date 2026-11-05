@@ -9,7 +9,7 @@ from autoflow_ide.model import Run, Session, Step
 
 
 # The coordinator version whose status.py output the IDE reads (the coordinator's VERSION file).
-SUPPORTED_COORDINATOR = "0.7.0-rc1"
+SUPPORTED_COORDINATOR = "0.7.0-rc2"
 
 
 class RunSourceError(Exception):
