@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -29,9 +30,15 @@ def test_parse_recorded_error_and_none():
     assert parse_status(fixture("status-none.json")) == []
 
 
-def test_module_name_wins_over_label():
-    text = '{"runs": [{"name": "r", "steps": [{"label": "build-2", "module": "build", "state": "running"}]}]}'
-    assert parse_status(text)[0].steps[0].name == "build"
+@pytest.mark.parametrize("label, module, name", [
+    ("s1", "review", "review s1"),
+    ("build-2", "build", "build-2"),
+    ("work and PR (outside AutoFlow)", None, "work and PR (outside AutoFlow)"),
+])
+def test_step_name_carries_module_and_label(label, module, name):
+    step = json.dumps({"label": label, "module": module, "state": "running"})
+    text = '{"runs": [{"name": "r", "steps": [%s]}]}' % step
+    assert parse_status(text)[0].steps[0].name == name
 
 
 @pytest.mark.parametrize("text", ["not json", "{}", '{"runs": [{"steps": []}]}'])

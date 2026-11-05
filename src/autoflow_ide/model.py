@@ -5,10 +5,19 @@ from typing import List, Optional
 
 @dataclass
 class Step:
-    name: str
+    label: str
     state: str
     verdict: Optional[str] = None
     session: Optional[str] = None
+    module: Optional[str] = None
+
+    @property
+    def name(self) -> str:
+        """The module and the run's label, as the run record names the step (review s1); the label alone
+        when there is no module or the label already starts with it."""
+        if self.module and not self.label.startswith(self.module):
+            return f"{self.module} {self.label}"
+        return self.label
 
 
 @dataclass

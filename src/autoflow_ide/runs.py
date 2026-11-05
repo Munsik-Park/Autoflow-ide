@@ -21,7 +21,7 @@ def parse_status(text: str) -> List[Run]:
     try:
         runs = []
         for r in json.loads(text)["runs"]:
-            steps = [Step(s.get("module") or s["label"], s["state"], s.get("verdict"), s.get("session"))
+            steps = [Step(s["label"], s["state"], s.get("verdict"), s.get("session"), s.get("module"))
                      for s in r.get("steps", [])]
             sessions = [Session(s["name"], s["state"], s.get("surface")) for s in r.get("sessions", [])]
             runs.append(Run(r["name"], steps, sessions, r.get("issue"), r.get("branch"), r.get("error")))

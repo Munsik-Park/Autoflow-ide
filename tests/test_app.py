@@ -118,16 +118,14 @@ async def settle(app, pilot):
     await pilot.pause()
 
 
-async def test_runs_attach_to_their_issue():
+async def test_issue_with_a_run_comes_first_with_a_mark():
     app = coordinated_app()
     async with app.run_test() as pilot:
         await settle(app, pilot)
         issues = app.query_one("#issues", DataTable)
-        assert issues.get_cell("3", "title") == "three  (run)"
-        assert issues.get_cell("4", "title") == "four"
-        assert app.query_one("#run", DataTable).row_count == 0
-        await pilot.press("down")
-        await pilot.pause()
+        assert [str(issues.get_row_at(i)[1]) for i in range(2)] == ["3", "4"]
+        assert str(issues.get_cell("3", "run")) == "●" and str(issues.get_cell("4", "run")) == ""
+        assert app.current.number == 3
         assert app.query_one("#run", DataTable).row_count == 3
         assert app.query_one("#sessions", DataTable).row_count == 2
         assert "issue-3-sample" in status(app) and "1 active runs" in status(app)
@@ -142,7 +140,7 @@ async def test_enter_on_a_session_focuses_its_pane():
     app = coordinated_app(focuser=focuser)
     async with app.run_test() as pilot:
         await settle(app, pilot)
-        await pilot.press("down", "3", "down", "enter")
+        await pilot.press("3", "down", "enter")
         await settle(app, pilot)
         assert focused == ["%2"]
 
@@ -154,7 +152,7 @@ async def test_focus_failure_shows_on_the_status_line():
     app = coordinated_app(focuser=focuser)
     async with app.run_test() as pilot:
         await settle(app, pilot)
-        await pilot.press("down", "3", "enter")
+        await pilot.press("3", "enter")
         await settle(app, pilot)
         assert "S1: can't find pane: %1" in status(app)
 
@@ -175,12 +173,62 @@ async def test_run_failure_and_periodic_refresh():
         assert len(calls) >= 2
 
 
-async def test_refresh_keeps_the_issue_cursor():
+async def test_refresh_keeps_the_highlighted_issue():
     app = coordinated_app(run_refresh_sec=0.05)
     async with app.run_test() as pilot:
         await settle(app, pilot)
         await pilot.press("down")
         await pilot.pause(0.2)
         await settle(app, pilot)
+        assert app.current.number == 4
         assert app.query_one("#issues", DataTable).cursor_row == 1
+
+
+async def test_a_run_ending_reloads_the_issues():
+    issue_calls, runs_seen = [], []
+
+    async def loader(repository):
+        issue_calls.append(repository)
+        return [Issue(4, "four"), Issue(3, "three")] if len(issue_calls) == 1 else [Issue(4, "four")]
+
+    async def runs(coordinator):
+        runs_seen.append(coordinator)
+        return RECORDED_RUNS if len(runs_seen) == 1 else []
+
+    app = IdeApp(repository="owner/name", loader=loader, coordinator="/c", run_loader=runs, run_refresh_sec=0.05)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.pause(0.3)
+        await settle(app, pilot)
+        assert len(issue_calls) == 2
+        assert app.query_one("#issues", DataTable).row_count == 1
+        assert app.current.number == 4
+
+
+async def test_long_text_fits_the_pane_with_an_ellipsis():
+    long = "a title much longer than the issues pane can show in one line of the table"
+    app = IdeApp(issues=[Issue(1, long)])
+    async with app.run_test(size=(100, 20)) as pilot:
+        await pilot.pause()
+        table = app.query_one("#issues", DataTable)
+        title = str(table.get_cell("1", "title"))
+        assert title.endswith("…") and len(title) < len(long)
+        assert table.virtual_size.width <= table.size.width
+
+
+async def test_a_new_run_does_not_move_away_from_another_run():
+    second = parse_status((Path(__file__).parent / "fixtures" / "status-run.json").read_text())[0]
+    second.issue, second.name = "4", "issue-4-sample"
+    seen = []
+
+    async def runs(coordinator):
+        seen.append(coordinator)
+        return RECORDED_RUNS if len(seen) == 1 else RECORDED_RUNS + [second]
+
+    app = coordinated_app(run_loader=runs, run_refresh_sec=0.05)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        assert app.current.number == 3
+        await pilot.pause(0.3)
+        await settle(app, pilot)
         assert app.current.number == 3

@@ -4,17 +4,24 @@ from typing import Awaitable, Callable, Dict, List, Optional
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.widgets import DataTable, Footer, Static
 
 from autoflow_ide.focus import FocusError, focus_surface
 from autoflow_ide.issues import IssueSourceError, gh_issues, repository_from_workspace
 from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
+from autoflow_ide.tables import ColumnSpec, fill
 
 IssueLoader = Callable[[str], Awaitable[List[Issue]]]
 RunLoader = Callable[[str], Awaitable[List[Run]]]
 Focuser = Callable[[str], Awaitable[None]]
 RUN_REFRESH_SEC = 5.0
+RUN_MARK = "●"
+ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("#", "number", 4), ("Title", "title", None)]
+RUN_COLUMNS: List[ColumnSpec] = [("Step", "step", 4), ("Module run", "name", None), ("Session", "session", 7),
+                                 ("State", "state", 8), ("Verdict", "verdict", 16)]
+SESSION_COLUMNS: List[ColumnSpec] = [("Session", "name", 7), ("State", "state", None)]
 
 
 class IdeApp(App):
@@ -62,9 +69,6 @@ class IdeApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#issues", DataTable).add_columns(("#", "number"), ("Title", "title"))
-        self.query_one("#run", DataTable).add_columns("Step", "Module run", "Session", "State", "Verdict")
-        self.query_one("#sessions", DataTable).add_columns("Session", "State")
         self.query_one("#issues", DataTable).focus()
         self.set_issues(self.issues)
         if not self.static:
@@ -73,21 +77,41 @@ class IdeApp(App):
             self.set_message("version", version_notice(self.coordinator))
             self.refresh_runs()
             self.set_interval(self.run_refresh_sec, self.refresh_runs)
+        self.call_after_refresh(self.render_all)
+
+    def on_resize(self) -> None:
+        self.call_after_refresh(self.render_all)
+
+    def render_all(self) -> None:
+        self.render_issues()
+        self.show_issue(self.current)
 
     # Issues
 
     def set_issues(self, issues: List[Issue]) -> None:
         self.issues = issues
         self.attach_runs()
-        table = self.query_one("#issues", DataTable)
-        table.clear()
-        for issue in issues:
-            table.add_row(str(issue.number), self.issue_title(issue), key=str(issue.number))
-        self.show_issue(issues[0] if issues else None)
+        self.render_issues()
+        self.show_issue(self.current_in(issues))
 
-    @staticmethod
-    def issue_title(issue: Issue) -> str:
-        return issue.title + ("  (run)" if issue.run else "")
+    def current_in(self, issues: List[Issue]) -> Optional[Issue]:
+        """The highlighted issue if it is still listed, otherwise the first one in display order."""
+        number = self.current.number if self.current else None
+        ordered = self.ordered()
+        return next((i for i in ordered if i.number == number), ordered[0] if ordered else None)
+
+    def ordered(self) -> List[Issue]:
+        """Issues with a run first, each group in the order the source gave."""
+        return sorted(self.issues, key=lambda i: i.run is None)
+
+    def render_issues(self) -> None:
+        table = self.query_one("#issues", DataTable)
+        ordered = self.ordered()
+        fill(table, ISSUE_COLUMNS,
+             ((str(i.number), [RUN_MARK if i.run else "", str(i.number), i.title]) for i in ordered))
+        current = self.current_in(ordered)
+        if current:
+            table.move_cursor(row=table.get_row_index(str(current.number)))
 
     def action_refresh_issues(self) -> None:
         if self.static:
@@ -102,10 +126,15 @@ class IdeApp(App):
         try:
             issues = await self.loader(self.repository)
         except IssueSourceError as e:
-            self.set_message("issues", f"issues: {e}")
-            return
-        self.set_issues(issues)
-        self.set_message("issues", f"{len(issues)} open issues")
+            issues, message = None, f"issues: {e}"
+        else:
+            message = f"{len(issues)} open issues"
+        try:
+            if issues is not None:
+                self.set_issues(issues)
+            self.set_message("issues", message)
+        except NoMatches:
+            pass  # the app is closing: its widgets are gone
 
     # Runs
 
@@ -116,15 +145,30 @@ class IdeApp(App):
         try:
             runs = await self.run_loader(self.coordinator)
         except RunSourceError as e:
-            self.set_message("runs", f"runs: {e}")
-            return
+            runs, error = None, f"runs: {e}"
+        try:
+            if runs is None:
+                self.set_message("runs", error)
+            else:
+                self.show_runs(runs)
+        except NoMatches:
+            pass  # the app is closing: its widgets are gone
+
+    def show_runs(self, runs: List[Run]) -> None:
+        before = {i.number for i in self.issues if i.run}
         self.runs = runs
         self.attach_runs()
-        table = self.query_one("#issues", DataTable)
-        for issue in self.issues:
-            table.update_cell(str(issue.number), "title", self.issue_title(issue))
-        self.show_issue(self.current)
+        after = {i.number for i in self.issues if i.run}
+        started = after - before
+        if started and (self.current is None or self.current.run is None):
+            # The operator is not looking at a run: move to the issue whose run just started.
+            self.current = next(i for i in self.ordered() if i.number in started)
+        self.render_issues()
+        self.show_issue(self.current_in(self.issues))
         self.set_message("runs", f"{len(runs)} active runs")
+        if before - after:
+            # A run ended: its issue may have been closed by the merge that ended it.
+            self.action_refresh_issues()
 
     def attach_runs(self) -> None:
         """Each issue gets the first run that names it; status.py lists the most recently changed run first."""
@@ -163,17 +207,17 @@ class IdeApp(App):
         run_table = self.query_one("#run", DataTable)
         sessions = self.query_one("#sessions", DataTable)
         run_row, session_row = run_table.cursor_row, sessions.cursor_row
-        run_table.clear()
-        sessions.clear()
         run = issue.run if issue else None
         self.query_one("#run-pane").border_title = f"Run: {run.name}" if run else "Run"
-        if run:
-            for n, step in enumerate(run.steps, 1):
-                run_table.add_row(str(n), step.name, step.session or "", step.state, step.verdict or "")
-            for session in run.sessions:
-                sessions.add_row(session.name, session.state, key=session.name)
-            run_table.move_cursor(row=min(run_row, max(run_table.row_count - 1, 0)))
-            sessions.move_cursor(row=min(session_row, max(sessions.row_count - 1, 0)))
+        steps = run.steps if run else []
+        fill(run_table, RUN_COLUMNS,
+             ((None, [str(n), s.name, s.session or "", s.state, s.verdict or ""]) for n, s in enumerate(steps, 1)))
+        fill(sessions, SESSION_COLUMNS,
+             ((s.name, [s.name, s.state]) for s in (run.sessions if run else [])))
+        if run_table.row_count:
+            run_table.move_cursor(row=min(run_row, run_table.row_count - 1))
+        if sessions.row_count:
+            sessions.move_cursor(row=min(session_row, sessions.row_count - 1))
         if run and run.error:
             self.set_message("run", f"{run.name}: {run.error}")
         else:
