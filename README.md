@@ -20,7 +20,7 @@ The IDE uses the coordinator through its command-line tools and their output. It
 
 - Python 3.9 or later
 - tmux, with the IDE started inside it
-- [autoflow-coordinator](https://github.com/Munsik-Park/autoflow-coordinator) and its requirements, including Claude Code and the AutoFlow plugin
+- [autoflow-coordinator](https://github.com/Munsik-Park/autoflow-coordinator) v0.7.0-rc1 and its requirements, including Claude Code and the AutoFlow plugin v0.7.0
 - `gh`, signed in, for the issue list
 
 ## Run
@@ -32,7 +32,9 @@ autoflow-ide --workspace <workspace>    # the repository named in a coordinator 
 autoflow-ide --demo                     # placeholder data
 ```
 
-`r` reloads the issues. The run and sessions panes are connected in later milestones (see [docs/design.md](docs/design.md)).
+Add `--coordinator <autoflow-coordinator clone>` to show the active runs: the IDE reads the coordinator's `tools/status.py` every 5 seconds and shows each run under its issue. In the sessions pane, Enter moves tmux focus to that session's pane.
+
+`r` reloads the issues.
 
 Tests: `pip install -e '.[test]'` and `pytest`.
 
