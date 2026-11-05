@@ -379,3 +379,67 @@ async def test_the_closed_row_goes_when_its_run_ends():
         assert app.query_one("#issues", DataTable).row_count == 1
         assert app.current.number == 4
         assert len(calls) >= 2      # the run ending reloaded the issues
+
+
+# Starting a run (#6)
+
+from autoflow_ide.start import StartError
+
+
+def starting_app(starter, focuser=None):
+    async def loader(repository):
+        return [Issue(4, "four"), Issue(3, "three")]
+
+    async def runs(coordinator):
+        return RECORDED_RUNS      # issue 3 has a run
+
+    return IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c", run_loader=runs,
+                  starter=starter, focuser=focuser)
+
+
+async def test_s_starts_a_run_for_the_issue_and_goes_back_to_it_the_second_time():
+    starts, focused = [], []
+
+    async def starter(coordinator, repository, number):
+        starts.append((coordinator, repository, number))
+        return "%7"
+
+    async def focuser(surface):
+        focused.append(surface)
+
+    app = starting_app(starter, focuser)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.press("down", "s")
+        await settle(app, pilot)
+        assert starts == [("/c", "Munsik-Park/autoflow-sandbox", 4)]
+        assert "#4: coordination session in %7" in status(app)
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert starts == [("/c", "Munsik-Park/autoflow-sandbox", 4)] and focused == ["%7"]
+
+
+async def test_s_on_an_issue_with_a_run_or_a_failure_says_why():
+    async def starter(coordinator, repository, number):
+        raise StartError("no workspace for Munsik-Park/autoflow-sandbox in /base")
+
+    app = starting_app(starter)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.press("s")                     # #3 has a run
+        await settle(app, pilot)
+        assert "#3 already has a run: autoflow-sandbox-3-sample" in status(app)
+        await pilot.press("down", "s")
+        await settle(app, pilot)
+        assert "start #4: no workspace for Munsik-Park/autoflow-sandbox in /base" in status(app)
+
+
+async def test_s_without_a_coordinator():
+    async def starter(coordinator, repository, number):
+        raise AssertionError("must not start")
+
+    app = IdeApp(issues=[Issue(4, "four")], starter=starter)
+    async with app.run_test() as pilot:
+        await pilot.press("s")
+        await pilot.pause()
+        assert "start: needs --coordinator" in status(app)

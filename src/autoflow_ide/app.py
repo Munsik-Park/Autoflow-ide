@@ -11,12 +11,14 @@ from autoflow_ide.focus import FocusError, focus_surface
 from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repository_from_workspace
 from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
+from autoflow_ide.start import StartError, start_run
 from autoflow_ide.tables import ColumnSpec, fill
 
 IssueLoader = Callable[[str], Awaitable[List[Issue]]]
 IssueLookup = Callable[[str, int], Awaitable[Issue]]
 RunLoader = Callable[[str], Awaitable[List[Run]]]
 Focuser = Callable[[str], Awaitable[None]]
+Starter = Callable[[str, str, int], Awaitable[str]]
 RUN_REFRESH_SEC = 5.0
 RUN_MARK = "●"
 ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("#", "number", 4), ("Title", "title", None)]
@@ -33,16 +35,19 @@ class IdeApp(App):
         ("2", "focus_pane('run')", "Run"),
         ("3", "focus_pane('sessions')", "Sessions"),
         ("r", "refresh_issues", "Refresh"),
+        ("s", "start_run", "Start run"),
         ("q", "quit", "Quit"),
     ]
 
     def __init__(self, issues: Optional[List[Issue]] = None, repository: Optional[str] = None,
                  loader: Optional[IssueLoader] = None, coordinator: Optional[str] = None,
                  run_loader: Optional[RunLoader] = None, focuser: Optional[Focuser] = None,
-                 run_refresh_sec: float = RUN_REFRESH_SEC, lookup: Optional[IssueLookup] = None):
+                 run_refresh_sec: float = RUN_REFRESH_SEC, lookup: Optional[IssueLookup] = None,
+                 starter: Optional[Starter] = None):
         """With `issues`, show them as given. Otherwise load the open issues of `repository` with `loader`.
         With `coordinator` (a coordinator clone), read its active runs every `run_refresh_sec` seconds.
-        An issue that has a run but is not in the open list is looked up with `lookup`."""
+        An issue that has a run but is not in the open list is looked up with `lookup`.
+        `starter` opens the coordination session for an issue (see start.py)."""
         super().__init__()
         self.open_issues: List[Issue] = list(issues) if issues is not None else []
         self.issues: List[Issue] = list(self.open_issues)
@@ -60,6 +65,9 @@ class IdeApp(App):
         self.coordinator = coordinator
         self.run_loader = run_loader or coordinator_runs
         self.focuser = focuser or focus_surface
+        self.starter = starter or start_run
+        # Coordination sessions opened from this IDE, by issue: their pane, until the issue has a run.
+        self.started: Dict[int, str] = {}
         self.run_refresh_sec = run_refresh_sec
         self.runs: List[Run] = []
         self.current: Optional[Issue] = None
@@ -175,6 +183,8 @@ class IdeApp(App):
         self.attach_runs()
         after = {i.number for i in self.issues if i.run}
         started = after - before
+        if any(self.started.pop(n, None) for n in after):
+            self.set_message("start", "")  # the coordination session prepared the run
         if started and (self.current is None or self.current.run is None):
             # The operator is not looking at a run: move to the issue whose run just started.
             self.current = next(i for i in self.ordered() if i.number in started)
@@ -242,6 +252,44 @@ class IdeApp(App):
             self.set_message("lookup", message)
         except NoMatches:
             pass  # the app is closing: its widgets are gone
+
+    # Starting a run
+
+    def action_start_run(self) -> None:
+        issue = self.current
+        if issue is None:
+            return
+        if self.static or not self.coordinator or not self.repository:
+            self.set_message("start", "start: needs --coordinator and --repo or --workspace")
+        elif issue.closed:
+            self.set_message("start", f"#{issue.number} is closed")
+        elif issue.run:
+            self.set_message("start", f"#{issue.number} already has a run: {issue.run.name}")
+        elif issue.number in self.started:
+            # Opened from here, its run not prepared yet: go back to that coordination session.
+            self.run_worker(self.focus_started(issue.number), group="start", exclusive=True)
+        else:
+            self.run_worker(self.start(issue.number), group="start", exclusive=True)
+
+    async def start(self, number: int) -> None:
+        self.set_message("start", f"#{number}: opening the coordination session")
+        try:
+            pane = await self.starter(self.coordinator, self.repository, number)
+        except StartError as e:
+            self.set_message("start", f"start #{number}: {e}")
+            return
+        self.started[number] = pane
+        self.set_message("start", f"#{number}: coordination session in {pane}")
+
+    async def focus_started(self, number: int) -> None:
+        pane = self.started[number]
+        try:
+            await self.focuser(pane)
+        except FocusError as e:
+            del self.started[number]
+            self.set_message("start", f"#{number}: {pane}: {e}; press s to open it again")
+            return
+        self.set_message("start", f"#{number}: coordination session in {pane}")
 
     # Selection
 
