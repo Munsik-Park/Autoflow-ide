@@ -15,7 +15,7 @@ def fixture(name):
 
 def test_parse_recorded_run():
     [run] = parse_status(fixture("status-run.json"))
-    assert (run.name, run.issue, run.branch, run.error) == ("issue-3-sample", "3", "issue-3-sample", None)
+    assert (run.name, run.issue, run.branch, run.error) == ("autoflow-sandbox-3-sample", "3", "issue-3-sample", None)
     assert [(s.name, s.session, s.state, s.verdict) for s in run.steps] == [
         ("analysis-1", "S1", "pass", "pass"),
         ("review-1", "S1", "fail", "missed"),
@@ -58,7 +58,7 @@ async def test_coordinator_runs_runs_status_py(tmp_path):
     recorded = fixture("status-run.json")
     coordinator = fake_coordinator(tmp_path, f"import sys\nsys.stdout.write({recorded!r})\n")
     [run] = await coordinator_runs(coordinator)
-    assert run.name == "issue-3-sample"
+    assert run.name == "autoflow-sandbox-3-sample"
 
 
 async def test_coordinator_runs_failure_carries_the_first_line(tmp_path):
