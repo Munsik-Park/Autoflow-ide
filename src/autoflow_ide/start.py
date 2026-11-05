@@ -83,7 +83,12 @@ async def open_coordination(coordinator: str, name: str, text: str) -> str:
     return pane
 
 
+async def coordinator_workspace(coordinator: str, repository: str) -> str:
+    """The name of the coordinator's workspace for `repository`."""
+    return find_workspace(await workspace_base(coordinator), repository)
+
+
 async def start_run(coordinator: str, repository: str, issue: int) -> str:
     """Open the coordination session for `issue` of `repository`; returns its pane id."""
-    workspace = find_workspace(await workspace_base(coordinator), repository)
+    workspace = await coordinator_workspace(coordinator, repository)
     return await open_coordination(coordinator, window_name(workspace, issue), instruction(workspace, issue))

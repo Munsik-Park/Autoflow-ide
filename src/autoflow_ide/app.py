@@ -1,5 +1,6 @@
 """The IDE screen: issues, the selected issue's run, and its sessions."""
 import argparse
+import time
 from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
 from textual.app import App, ComposeResult
@@ -12,10 +13,12 @@ from autoflow_ide.focus import FocusError, focus_surface
 from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repository_from_workspace
 from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
-from autoflow_ide.start import StartError, start_run
+from autoflow_ide.start import StartError, coordinator_workspace, start_run
 from autoflow_ide.tables import ColumnSpec, fill
+from autoflow_ide.windows import TmuxWindows, WindowError
 
 IssueLoader = Callable[[str], Awaitable[List[Issue]]]
+WorkspaceFinder = Callable[[str, str], Awaitable[str]]
 IssueLookup = Callable[[str, int], Awaitable[Issue]]
 RunLoader = Callable[[str], Awaitable[List[Run]]]
 Focuser = Callable[[str], Awaitable[None]]
@@ -24,6 +27,10 @@ RUN_REFRESH_SEC = 5.0
 # The open issues are also read again on this interval, so an issue a merge closed leaves the list without a
 # key press (about 60 gh calls an hour), and when a step changes (see show_runs).
 ISSUE_REFRESH_SEC = 60.0
+# The coordination session window of an issue that is closed and has no run is closed once its screen has not
+# changed for WINDOW_IDLE_SEC, so a last report being written is not cut off; checked every WINDOW_CHECK_SEC.
+WINDOW_CHECK_SEC = 15.0
+WINDOW_IDLE_SEC = 60.0
 RUN_MARK = "●"
 ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("#", "number", 4), ("Title", "title", None)]
 RUN_COLUMNS: List[ColumnSpec] = [("Step", "step", 4), ("Module run", "name", None), ("Session", "session", 7),
@@ -47,12 +54,15 @@ class IdeApp(App):
                  loader: Optional[IssueLoader] = None, coordinator: Optional[str] = None,
                  run_loader: Optional[RunLoader] = None, focuser: Optional[Focuser] = None,
                  run_refresh_sec: float = RUN_REFRESH_SEC, lookup: Optional[IssueLookup] = None,
-                 starter: Optional[Starter] = None, issue_refresh_sec: float = ISSUE_REFRESH_SEC):
+                 starter: Optional[Starter] = None, issue_refresh_sec: float = ISSUE_REFRESH_SEC,
+                 windows=None, workspace_finder: Optional[WorkspaceFinder] = None,
+                 window_check_sec: float = WINDOW_CHECK_SEC, window_idle_sec: float = WINDOW_IDLE_SEC):
         """With `issues`, show them as given. Otherwise load the open issues of `repository` with `loader`,
         again every `issue_refresh_sec` seconds.
         With `coordinator` (a coordinator clone), read its active runs every `run_refresh_sec` seconds.
         An issue that has a run but is not in the open list is looked up with `lookup`.
-        `starter` opens the coordination session for an issue (see start.py)."""
+        `starter` opens the coordination session for an issue (see start.py); `windows` finds and closes those
+        sessions' windows (see windows.py) in the workspace `workspace_finder` names."""
         super().__init__()
         self.open_issues: List[Issue] = list(issues) if issues is not None else []
         self.issues: List[Issue] = list(self.open_issues)
@@ -76,6 +86,17 @@ class IdeApp(App):
         self.run_refresh_sec = run_refresh_sec
         self.issue_refresh_sec = issue_refresh_sec
         self.runs: List[Run] = []
+        # Whether the last read of the runs succeeded: without it, an issue cannot be told to have no run.
+        self.runs_read = False
+        self.windows = windows or TmuxWindows()
+        self.workspace_finder = workspace_finder or coordinator_workspace
+        self.window_check_sec = window_check_sec
+        self.window_idle_sec = window_idle_sec
+        self.workspace: Optional[str] = None
+        # The coordination session windows, by issue: (window id, its screen, when that screen was first seen).
+        self.screens: Dict[int, Tuple[str, str, float]] = {}
+        # When an issue was last looked up and found open, so it is not looked up on every check.
+        self.found_open: Dict[int, float] = {}
         # The steps of each shown run, by run name, as last read: what a step change is compared against.
         self.step_marks: Dict[str, List[Tuple[str, str, Optional[str]]]] = {}
         self.current: Optional[Issue] = None
@@ -105,6 +126,8 @@ class IdeApp(App):
             self.set_message("version", version_notice(self.coordinator))
             self.refresh_runs()
             self.set_interval(self.run_refresh_sec, self.refresh_runs)
+            if not self.static and self.repository:
+                self.set_interval(self.window_check_sec, self.check_windows)
         self.call_after_refresh(self.render_all)
 
     def on_resize(self) -> None:
@@ -178,6 +201,7 @@ class IdeApp(App):
             runs = await self.run_loader(self.coordinator)
         except RunSourceError as e:
             runs, error = None, f"runs: {e}"
+        self.runs_read = runs is not None
         try:
             if runs is None:
                 self.set_message("runs", error)
@@ -308,6 +332,69 @@ class IdeApp(App):
             self.set_message("start", f"#{number}: {pane}: {e}; press s to open it again")
             return
         self.set_message("start", f"#{number}: coordination session in {pane}")
+
+    # Closing the coordination session of a finished issue
+
+    def check_windows(self) -> None:
+        self.run_worker(self.check_windows_once(), group="windows", exclusive=True)
+
+    async def check_windows_once(self) -> None:
+        try:
+            await self.close_finished_windows()
+        except NoMatches:
+            pass  # the app is closing: its widgets are gone
+
+    async def close_finished_windows(self) -> None:
+        """Close the coordination session window of each issue that is closed and has no run, once its screen
+        has not changed for window_idle_sec. One issue can take several runs, so an open issue keeps its
+        window after a run ends; a merge closes the issue before the run ends, so a run keeps it too."""
+        try:
+            if self.workspace is None:
+                self.workspace = await self.workspace_finder(self.coordinator, self.repository)
+            windows = await self.windows.find(self.workspace)
+        except (StartError, WindowError) as e:
+            self.set_message("windows", f"windows: {e}")
+            return
+        now = time.monotonic()
+        self.screens = {n: s for n, s in self.screens.items() if n in windows}
+        for number, window in windows.items():
+            try:
+                screen = await self.windows.screen(window)
+            except WindowError as e:
+                self.set_message("windows", f"{window.name}: {e}")
+                continue
+            seen = self.screens.get(number)
+            if seen is None or seen[0] != window.id or seen[1] != screen:
+                self.screens[number] = seen = (window.id, screen, now)
+            if now - seen[2] < self.window_idle_sec or not await self.finished(number, now):
+                continue
+            try:
+                await self.windows.close(window)
+            except WindowError as e:
+                self.set_message("windows", f"{window.name}: {e}")
+                continue
+            del self.screens[number]
+            self.started.pop(number, None)
+            self.set_message("windows", f"closed {window.name}: #{number} is closed and has no run")
+
+    async def finished(self, number: int, now: float) -> bool:
+        """Whether issue `number` is closed and has no active run. Closed is asked of GitHub, not taken from
+        the issue missing from the open list; an issue found open is asked again after window_idle_sec."""
+        if not (self.listed and self.runs_read):
+            return False
+        if any(r.issue == str(number) for r in self.own_runs()) or any(i.number == number for i in self.open_issues):
+            return False
+        found_open = self.found_open.get(number)
+        if found_open is not None and now - found_open < self.window_idle_sec:
+            return False
+        try:
+            issue = await self.lookup(self.repository, number)
+        except IssueSourceError as e:
+            self.set_message("windows", f"issue #{number}: {e}")
+            return False
+        if not issue.closed:
+            self.found_open[number] = now
+        return issue.closed
 
     # Selection
 
