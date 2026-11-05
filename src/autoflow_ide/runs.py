@@ -1,6 +1,7 @@
 """Runs from the coordinator's tools/status.py."""
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 from typing import List
@@ -8,8 +9,10 @@ from typing import List
 from autoflow_ide.model import Run, Session, Step
 
 
-# The coordinator version whose status.py output the IDE reads (the coordinator's VERSION file).
-SUPPORTED_COORDINATOR = "0.7.0-rc2"
+# The coordinator version whose status.py output the IDE reads, without -rcN. The coordinator's VERSION
+# follows the AutoFlow version it supports, and improvements to the coordinator for that version go up as
+# -rcN; the coordinator itself compares versions without -rcN (prepare.py).
+SUPPORTED_COORDINATOR = "0.7.0"
 
 
 class RunSourceError(Exception):
@@ -55,6 +58,11 @@ def version_notice(coordinator: str) -> str:
         version = path.read_text().strip()
     except OSError:
         return f"coordinator: no {path}"
-    if version != SUPPORTED_COORDINATOR:
+    if without_rc(version) != SUPPORTED_COORDINATOR:
         return f"coordinator {version}, supported {SUPPORTED_COORDINATOR}"
     return ""
+
+
+def without_rc(version: str) -> str:
+    """The version without its -rcN, as the coordinator's prepare.py compares versions."""
+    return re.sub(r"-rc[0-9]+$", "", version)
