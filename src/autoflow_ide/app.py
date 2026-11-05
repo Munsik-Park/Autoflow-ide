@@ -1,6 +1,6 @@
 """The IDE screen: issues, the selected issue's run, and its sessions."""
 import argparse
-from typing import Awaitable, Callable, Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -21,6 +21,9 @@ RunLoader = Callable[[str], Awaitable[List[Run]]]
 Focuser = Callable[[str], Awaitable[None]]
 Starter = Callable[[str, str, int], Awaitable[str]]
 RUN_REFRESH_SEC = 5.0
+# The open issues are also read again on this interval, so an issue a merge closed leaves the list without a
+# key press (about 60 gh calls an hour), and when a step changes (see show_runs).
+ISSUE_REFRESH_SEC = 60.0
 RUN_MARK = "●"
 ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("#", "number", 4), ("Title", "title", None)]
 RUN_COLUMNS: List[ColumnSpec] = [("Step", "step", 4), ("Module run", "name", None), ("Session", "session", 7),
@@ -44,8 +47,9 @@ class IdeApp(App):
                  loader: Optional[IssueLoader] = None, coordinator: Optional[str] = None,
                  run_loader: Optional[RunLoader] = None, focuser: Optional[Focuser] = None,
                  run_refresh_sec: float = RUN_REFRESH_SEC, lookup: Optional[IssueLookup] = None,
-                 starter: Optional[Starter] = None):
-        """With `issues`, show them as given. Otherwise load the open issues of `repository` with `loader`.
+                 starter: Optional[Starter] = None, issue_refresh_sec: float = ISSUE_REFRESH_SEC):
+        """With `issues`, show them as given. Otherwise load the open issues of `repository` with `loader`,
+        again every `issue_refresh_sec` seconds.
         With `coordinator` (a coordinator clone), read its active runs every `run_refresh_sec` seconds.
         An issue that has a run but is not in the open list is looked up with `lookup`.
         `starter` opens the coordination session for an issue (see start.py)."""
@@ -70,7 +74,10 @@ class IdeApp(App):
         # Coordination sessions opened from this IDE, by issue: their pane, until the issue has a run.
         self.started: Dict[int, str] = {}
         self.run_refresh_sec = run_refresh_sec
+        self.issue_refresh_sec = issue_refresh_sec
         self.runs: List[Run] = []
+        # The steps of each shown run, by run name, as last read: what a step change is compared against.
+        self.step_marks: Dict[str, List[Tuple[str, str, Optional[str]]]] = {}
         self.current: Optional[Issue] = None
         self.messages: Dict[str, str] = {}
 
@@ -93,6 +100,7 @@ class IdeApp(App):
         self.set_issues(self.issues)
         if not self.static:
             self.action_refresh_issues()
+            self.set_interval(self.issue_refresh_sec, self.action_refresh_issues)
         if self.coordinator:
             self.set_message("version", version_notice(self.coordinator))
             self.refresh_runs()
@@ -194,9 +202,18 @@ class IdeApp(App):
         own = len(self.own_runs())
         others = len(runs) - own
         self.set_message("runs", f"{own} active runs" + (f" ({others} in other repositories)" if others else ""))
-        if before - after:
-            # A run ended: its issue may have been closed by the merge that ended it.
+        if before - after or self.steps_changed():
+            # A run ended, or a step of a run changed: a merge may have closed an issue in the meantime.
             self.action_refresh_issues()
+
+    def steps_changed(self) -> bool:
+        """Whether a step of a run already shown changed its state or verdict, or a step was added, since the
+        last read; records the steps for the next one. Not the session state and idle time of a running step,
+        which change on every read. A run seen for the first time is not a change."""
+        marks = {r.name: [(s.label, s.state, s.verdict) for s in r.steps] for r in self.own_runs()}
+        changed = any(name in self.step_marks and self.step_marks[name] != steps for name, steps in marks.items())
+        self.step_marks = marks
+        return changed
 
     def own_runs(self) -> List[Run]:
         """The runs of this repository. status.py lists the active runs of every repository; the coordinator

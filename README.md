@@ -34,7 +34,7 @@ autoflow-ide --demo                     # placeholder data
 
 Add `--coordinator <autoflow-coordinator clone>` to show the active runs: the IDE reads the coordinator's `tools/status.py` every 5 seconds and shows each run under its issue. In the run pane, Enter opens what happened in a step: its state, verdict, session, and whether it is the module's first run, a rerun or a return and which step sent it back (`c` goes to that step). In the sessions pane, Enter moves tmux focus to that session's pane.
 
-`r` reloads the issues.
+The open issues are read again every minute, when a step of a run changes its state or verdict or a step is added, and when a run ends, so an issue closed by a merge leaves the list without a key press (an issue that still has a run stays as a "(closed)" row). `r` reloads them at once.
 
 `s` starts a run for the highlighted issue, as an operator does by hand: it opens a tmux window named `<workspace>#<issue>` with a shell in the coordinator clone and starts Claude Code there with `Workspace <workspace>, issue #<issue>.` as its first prompt. The workspace is the one in the coordinator's base (`tools/config.py base`) whose `repo.json` names the repository. The coordination session then presents the workflow for approval in that window. `s` again, before the run is prepared, goes back to that window.
 

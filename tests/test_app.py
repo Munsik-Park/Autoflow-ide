@@ -492,3 +492,61 @@ async def test_enter_on_a_step_opens_it_and_c_goes_to_its_cause():
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(app.screen, StepDetail)
+
+
+# Reading the open issues again (#22)
+
+from dataclasses import replace
+
+
+def counting_app(run_loader, **kw):
+    calls = []
+
+    async def loader(repository):
+        calls.append(repository)
+        return [Issue(4, "four"), Issue(3, "three")]
+
+    app = IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c", run_loader=run_loader,
+                 **kw)
+    return app, calls
+
+
+async def test_issues_are_read_again_on_the_interval():
+    async def runs(coordinator):
+        return []
+
+    app, calls = counting_app(runs, issue_refresh_sec=0.05)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.pause(0.3)
+        await settle(app, pilot)
+        assert len(calls) >= 3
+
+
+def with_last_step(run, **changes):
+    return replace(run, steps=run.steps[:-1] + [replace(run.steps[-1], **changes)])
+
+
+async def test_issues_are_read_again_when_a_step_changes_not_when_only_idle_time_does():
+    run = RECORDED_RUNS[0]
+    reads = [
+        [run],
+        [with_last_step(run, state="running", verdict=None, session_state="working", idle_sec=3.0)],
+        [with_last_step(run, state="running", verdict=None, session_state="working", idle_sec=8.0)],
+        [with_last_step(run, state="pass", verdict="pass")],
+    ]
+    seen = []
+
+    async def runs(coordinator):
+        seen.append(coordinator)
+        return reads[min(len(seen), len(reads)) - 1]
+
+    app, calls = counting_app(runs, run_refresh_sec=10)   # read the runs only when the test asks
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        assert len(seen) == 1 and len(calls) == 1      # a run seen for the first time is not a change
+        expected = [2, 2, 3]                           # step state changed; only idle time; state again
+        for count in expected:
+            app.refresh_runs()
+            await settle(app, pilot)
+            assert len(calls) == count
