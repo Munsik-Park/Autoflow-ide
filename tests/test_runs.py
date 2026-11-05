@@ -77,10 +77,12 @@ from autoflow_ide.runs import SUPPORTED_COORDINATOR, version_notice
 
 def test_version_notice(tmp_path):
     assert version_notice(str(tmp_path)).startswith("coordinator: no ")
-    (tmp_path / "VERSION").write_text(SUPPORTED_COORDINATOR + "\n")
-    assert version_notice(str(tmp_path)) == ""
-    (tmp_path / "VERSION").write_text("0.8.0-rc1\n")
-    assert version_notice(str(tmp_path)) == f"coordinator 0.8.0-rc1, supported {SUPPORTED_COORDINATOR}"
+    for same in (SUPPORTED_COORDINATOR, "0.7.0-rc2", "0.7.0-rc3", "0.7.0-rc12"):
+        (tmp_path / "VERSION").write_text(same + "\n")
+        assert version_notice(str(tmp_path)) == "", same
+    for other in ("0.8.0-rc1", "0.7.1", "0.7.0-beta1"):
+        (tmp_path / "VERSION").write_text(other + "\n")
+        assert version_notice(str(tmp_path)) == f"coordinator {other}, supported {SUPPORTED_COORDINATOR}"
 
 
 def test_supported_version_is_the_recorded_one():
