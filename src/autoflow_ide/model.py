@@ -5,9 +5,10 @@ from typing import List, Optional
 
 @dataclass
 class Step:
-    module: str
+    name: str
     state: str
     verdict: Optional[str] = None
+    session: Optional[str] = None
 
 
 @dataclass
@@ -22,6 +23,9 @@ class Run:
     name: str
     steps: List[Step] = field(default_factory=list)
     sessions: List[Session] = field(default_factory=list)
+    issue: Optional[str] = None
+    branch: Optional[str] = None
+    error: Optional[str] = None
 
 
 @dataclass
@@ -32,12 +36,12 @@ class Issue:
 
 
 def placeholder_issues() -> List[Issue]:
-    """Sample data for the screen until the issue and run sources are connected."""
+    """Sample data for --demo."""
     return [
         Issue(12, "Add the issues pane", Run(
             "issue-12",
-            steps=[Step("analysis", "pass", "pass"), Step("build", "running")],
-            sessions=[Session("coordination", "working"), Session("S1", "turn-end"), Session("S2", "working")],
+            steps=[Step("analysis", "pass", "pass", "S1"), Step("build", "running", None, "S2")],
+            sessions=[Session("S1", "turn-end"), Session("S2", "working")],
         )),
         Issue(15, "Read runs from status.py"),
         Issue(18, "Move tmux focus to a session"),

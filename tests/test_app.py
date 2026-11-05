@@ -92,3 +92,95 @@ async def test_without_a_repository_nothing_is_loaded():
     async with app.run_test() as pilot:
         await pilot.pause()
         assert "no repository" in status(app)
+
+
+from pathlib import Path
+
+from autoflow_ide.focus import FocusError
+from autoflow_ide.runs import RunSourceError, parse_status
+
+RECORDED_RUNS = parse_status((Path(__file__).parent / "fixtures" / "status-run.json").read_text())
+
+
+def coordinated_app(focuser=None, run_loader=None, **kw):
+    async def loader(repository):
+        return [Issue(4, "four"), Issue(3, "three")]
+
+    async def runs(coordinator):
+        return RECORDED_RUNS
+
+    return IdeApp(repository="owner/name", loader=loader, coordinator="/coordinator",
+                  run_loader=run_loader or runs, focuser=focuser, **kw)
+
+
+async def settle(app, pilot):
+    await app.workers.wait_for_complete()
+    await pilot.pause()
+
+
+async def test_runs_attach_to_their_issue():
+    app = coordinated_app()
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        assert issues.get_cell("3", "title") == "three  (run)"
+        assert issues.get_cell("4", "title") == "four"
+        assert app.query_one("#run", DataTable).row_count == 0
+        await pilot.press("down")
+        await pilot.pause()
+        assert app.query_one("#run", DataTable).row_count == 3
+        assert app.query_one("#sessions", DataTable).row_count == 2
+        assert "issue-3-sample" in status(app) and "1 active runs" in status(app)
+
+
+async def test_enter_on_a_session_focuses_its_pane():
+    focused = []
+
+    async def focuser(surface):
+        focused.append(surface)
+
+    app = coordinated_app(focuser=focuser)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.press("down", "3", "down", "enter")
+        await settle(app, pilot)
+        assert focused == ["%2"]
+
+
+async def test_focus_failure_shows_on_the_status_line():
+    async def focuser(surface):
+        raise FocusError("can't find pane: %1")
+
+    app = coordinated_app(focuser=focuser)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.press("down", "3", "enter")
+        await settle(app, pilot)
+        assert "S1: can't find pane: %1" in status(app)
+
+
+async def test_run_failure_and_periodic_refresh():
+    calls = []
+
+    async def runs(coordinator):
+        calls.append(coordinator)
+        raise RunSourceError("no /coordinator/tools/status.py")
+
+    app = coordinated_app(run_loader=runs, run_refresh_sec=0.05)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.pause(0.2)
+        await settle(app, pilot)
+        assert "runs: no /coordinator/tools/status.py" in status(app)
+        assert len(calls) >= 2
+
+
+async def test_refresh_keeps_the_issue_cursor():
+    app = coordinated_app(run_refresh_sec=0.05)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.press("down")
+        await pilot.pause(0.2)
+        await settle(app, pilot)
+        assert app.query_one("#issues", DataTable).cursor_row == 1
+        assert app.current.number == 3
