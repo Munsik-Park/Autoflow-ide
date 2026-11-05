@@ -1,0 +1,32 @@
+#panes {
+    height: 1fr;
+}
+
+.pane {
+    border: round $panel-lighten-2;
+    border-title-color: $text-muted;
+}
+
+.pane:focus-within {
+    border: round $accent;
+    border-title-color: $accent;
+}
+
+#issues-pane {
+    width: 40;
+}
+
+#run-pane {
+    width: 1fr;
+}
+
+#sessions-pane {
+    width: 30;
+}
+
+#status {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $text-muted;
+}

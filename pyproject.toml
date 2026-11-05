@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autoflow-ide"
+version = "0.1.0"
+description = "An issue-based terminal IDE for AutoFlow"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+dependencies = ["textual>=8.2"]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-asyncio"]
+
+[project.scripts]
+autoflow-ide = "autoflow_ide.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+autoflow_ide = ["*.tcss"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

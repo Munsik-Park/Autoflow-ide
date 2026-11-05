@@ -23,6 +23,17 @@ The IDE uses the coordinator through its command-line tools and their output. It
 - [autoflow-coordinator](https://github.com/Munsik-Park/autoflow-coordinator) and its requirements, including Claude Code and the AutoFlow plugin
 - `gh`, signed in, for the issue list
 
+## Run
+
+```
+pip install -e .
+autoflow-ide
+```
+
+The screen shows placeholder data until the issue and run sources are connected (see the milestones in [docs/design.md](docs/design.md)).
+
+Tests: `pip install -e '.[test]'` and `pytest`.
+
 ## License
 
 [Apache License 2.0](LICENSE)
