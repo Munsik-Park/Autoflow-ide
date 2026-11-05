@@ -30,3 +30,21 @@
     background: $panel;
     color: $text-muted;
 }
+
+StepDetail {
+    align: center middle;
+}
+
+#detail {
+    width: 72;
+    height: auto;
+    border: round $accent;
+    border-title-color: $accent;
+    background: $surface;
+    padding: 1 2;
+}
+
+#detail-hint {
+    margin-top: 1;
+    color: $text-muted;
+}

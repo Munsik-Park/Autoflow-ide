@@ -7,6 +7,7 @@ from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.widgets import DataTable, Footer, Static
 
+from autoflow_ide.detail import StepDetail
 from autoflow_ide.focus import FocusError, focus_surface
 from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repository_from_workspace
 from autoflow_ide.model import Issue, Run, placeholder_issues
@@ -302,6 +303,19 @@ class IdeApp(App):
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if event.data_table.id == "sessions" and event.row_key.value is not None:
             self.run_worker(self.focus_session(event.row_key.value), group="focus", exclusive=True)
+        elif event.data_table.id == "run":
+            steps = self.current.run.steps if self.current and self.current.run else []
+            if 0 <= event.cursor_row < len(steps):
+                self.push_screen(StepDetail(steps[event.cursor_row], event.cursor_row + 1), self.go_to_step)
+
+    def go_to_step(self, label: Optional[str]) -> None:
+        """Highlight the first step named `label` in the run pane (the detail's cause)."""
+        steps = self.current.run.steps if self.current and self.current.run else []
+        index = next((n for n, s in enumerate(steps) if s.label == label), None)
+        if index is not None:
+            table = self.query_one("#run", DataTable)
+            table.focus()
+            table.move_cursor(row=index)
 
     async def focus_session(self, key: str) -> None:
         run = self.current.run if self.current else None

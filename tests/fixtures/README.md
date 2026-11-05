@@ -18,5 +18,6 @@ Messages recorded from gh 2.103.3, used in `tests/test_issues.py`:
 Output recorded from autoflow-coordinator `tools/status.py` at v0.7.0-rc2 (commit 988011d), of the supported version v0.7.0. At v0.7.0-rc3 (commit 4b08d51) the same run directories give the same output with one more key per run, `coordination` (null here: run.env has no COORD_SURFACE); the IDE does not read it.
 
 - `status-run.json`: a run directory named `autoflow-sandbox-3-sample` (the coordinator's `<repo>-<issue>-<key>` form) with run.env (`ISSUE=3`, `TERMINAL=tmux`), two sessions in sessions.tsv whose claude processes are gone, and three rows in runbook.md's progress table (a pass, a missed verdict and a noted one).
+- `status-cycle.json`: a run directory named `autoflow-sandbox-5-cycle` (`ISSUE=5`) with five invocations in its records folder, written in this order: `analysis-1`, `build-1`, `review-1`, `build-2` (input `findings` from `review-1`) and `review-2` (input `previous_findings` from `review-1`), each with a `result.json`; a progress row for each, `review-1` missed and the others pass; three sessions whose processes are gone. `build-2` is a return caused by `review-1` and `review-2` a rerun of it. Recorded with `tools/status.py autoflow-sandbox-5-cycle`.
 - `status-error.json`: a run directory without run.env.
 - `status-none.json`: no active runs.

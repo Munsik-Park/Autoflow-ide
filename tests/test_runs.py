@@ -87,3 +87,14 @@ def test_version_notice(tmp_path):
 
 def test_supported_version_is_the_recorded_one():
     assert "v" + SUPPORTED_COORDINATOR in (FIXTURES / "README.md").read_text()
+
+
+def test_parse_a_return_and_a_rerun():
+    run = parse_status((FIXTURES / "status-cycle.json").read_text())[0]
+    by_label = {s.label: s for s in run.steps}
+    assert [s.label for s in run.steps] == ["analysis-1", "build-1", "review-1", "build-2", "review-2"]
+    assert (by_label["review-1"].state, by_label["review-1"].verdict) == ("fail", "missed")
+    assert (by_label["build-2"].entry, by_label["build-2"].cause) == ("return", "review-1")
+    assert (by_label["review-2"].entry, by_label["review-2"].cause) == ("rerun", "review-1")
+    assert all(s.entry is None and s.cause is None for s in run.steps[:3])
+    assert all(s.session_state is None and s.idle_sec is None for s in run.steps)

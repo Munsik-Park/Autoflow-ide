@@ -443,3 +443,52 @@ async def test_s_without_a_coordinator():
         await pilot.press("s")
         await pilot.pause()
         assert "start: needs --coordinator" in status(app)
+
+
+# The run pane's Enter: what happened in a step (#20)
+
+from autoflow_ide.detail import StepDetail, describe, entry_text
+from autoflow_ide.model import Step
+
+CYCLE = parse_status((Path(__file__).parent / "fixtures" / "status-cycle.json").read_text())
+
+
+def test_entry_text():
+    assert entry_text(Step("build-2", "pass", entry="return", cause="review-1", module="build")) == "return: sent back by review-1"
+    assert entry_text(Step("build-2", "pass", entry="return", module="build")).startswith("return: sent back by an input")
+    assert entry_text(Step("review-2", "pass", entry="rerun", cause="review-1", module="review")) == "rerun of review-1"
+    assert entry_text(Step("review-1", "fail", module="review")) == "first run"
+    assert entry_text(Step("CI check (gh)", "pass")) == "-"
+
+
+def test_describe_a_running_step():
+    rows = dict(describe(Step("build-1", "running", session="S2", module="build", session_state="working",
+                              idle_sec=42.4), 2))
+    assert rows["Session"] == "S2 (working, idle 42s)" and rows["Verdict"] == "-" and rows["Step"] == "2  build-1"
+
+
+async def test_enter_on_a_step_opens_it_and_c_goes_to_its_cause():
+    async def loader(repository):
+        return [Issue(5, "five")]
+
+    async def runs(coordinator):
+        return CYCLE
+
+    app = IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c", run_loader=runs)
+    async with app.run_test(size=(140, 40)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("2", "down", "down", "down", "enter")      # step 4, build-2
+        await pilot.pause()
+        assert isinstance(app.screen, StepDetail)
+        body = str(app.screen.query_one("#detail-body").render())
+        assert "build-2" in body and "return: sent back by review-1" in body
+        await pilot.press("c")
+        await pilot.pause()
+        assert not isinstance(app.screen, StepDetail)
+        assert app.query_one("#run", DataTable).cursor_row == 2           # review-1
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "first run" in str(app.screen.query_one("#detail-body").render())
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, StepDetail)
