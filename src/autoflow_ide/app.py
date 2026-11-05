@@ -8,12 +8,13 @@ from textual.css.query import NoMatches
 from textual.widgets import DataTable, Footer, Static
 
 from autoflow_ide.focus import FocusError, focus_surface
-from autoflow_ide.issues import IssueSourceError, gh_issues, repository_from_workspace
+from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repository_from_workspace
 from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
 from autoflow_ide.tables import ColumnSpec, fill
 
 IssueLoader = Callable[[str], Awaitable[List[Issue]]]
+IssueLookup = Callable[[str, int], Awaitable[Issue]]
 RunLoader = Callable[[str], Awaitable[List[Run]]]
 Focuser = Callable[[str], Awaitable[None]]
 RUN_REFRESH_SEC = 5.0
@@ -38,12 +39,22 @@ class IdeApp(App):
     def __init__(self, issues: Optional[List[Issue]] = None, repository: Optional[str] = None,
                  loader: Optional[IssueLoader] = None, coordinator: Optional[str] = None,
                  run_loader: Optional[RunLoader] = None, focuser: Optional[Focuser] = None,
-                 run_refresh_sec: float = RUN_REFRESH_SEC):
+                 run_refresh_sec: float = RUN_REFRESH_SEC, lookup: Optional[IssueLookup] = None):
         """With `issues`, show them as given. Otherwise load the open issues of `repository` with `loader`.
-        With `coordinator` (a coordinator clone), read its active runs every `run_refresh_sec` seconds."""
+        With `coordinator` (a coordinator clone), read its active runs every `run_refresh_sec` seconds.
+        An issue that has a run but is not in the open list is looked up with `lookup`."""
         super().__init__()
-        self.issues: List[Issue] = list(issues) if issues is not None else []
+        self.open_issues: List[Issue] = list(issues) if issues is not None else []
+        self.issues: List[Issue] = list(self.open_issues)
         self.static = issues is not None
+        # Until the open issues have been read, an issue with a run cannot be told to be missing from them.
+        self.listed = self.static
+        self.lookup = lookup or gh_issue
+        # Issues missing from the open list, by number: the looked-up issue, or None while looking or after a
+        # failure (looked up again on the next refresh of the issues).
+        self.lookups: Dict[int, Optional[Issue]] = {}
+        # Titles of the issues seen in the open list, shown for an issue that left it until it is looked up.
+        self.titles: Dict[int, str] = {}
         self.repository = repository
         self.loader = loader or gh_issues
         self.coordinator = coordinator
@@ -89,7 +100,9 @@ class IdeApp(App):
     # Issues
 
     def set_issues(self, issues: List[Issue]) -> None:
-        self.issues = issues
+        """Show the open `issues`, with the runs attached and the issues of runs that are not among them."""
+        self.open_issues = issues
+        self.titles.update((i.number, i.title) for i in issues)
         self.attach_runs()
         self.render_issues()
         self.show_issue(self.current_in(issues))
@@ -108,7 +121,7 @@ class IdeApp(App):
         table = self.query_one("#issues", DataTable)
         ordered = self.ordered()
         fill(table, ISSUE_COLUMNS,
-             ((str(i.number), [RUN_MARK if i.run else "", str(i.number), i.title]) for i in ordered))
+             ((str(i.number), [RUN_MARK if i.run else "", str(i.number), issue_title(i)]) for i in ordered))
         current = self.current_in(ordered)
         if current:
             table.move_cursor(row=table.get_row_index(str(current.number)))
@@ -120,6 +133,7 @@ class IdeApp(App):
             self.set_message("issues", "no repository: start with --repo owner/name or --workspace <dir>")
             return
         self.set_message("issues", "loading issues")
+        self.lookups = {n: i for n, i in self.lookups.items() if i is not None}
         self.run_worker(self.load_issues(), group="issues", exclusive=True)
 
     async def load_issues(self) -> None:
@@ -131,6 +145,7 @@ class IdeApp(App):
             message = f"{len(issues)} open issues"
         try:
             if issues is not None:
+                self.listed = True
                 self.set_issues(issues)
             self.set_message("issues", message)
         except NoMatches:
@@ -181,12 +196,52 @@ class IdeApp(App):
         return [r for r in self.runs if r.issue and r.name.startswith(f"{name}-{r.issue}-")]
 
     def attach_runs(self) -> None:
-        """Each issue gets the first of its runs; status.py lists the most recently changed run first."""
-        if not self.coordinator:
+        """Each issue gets the first of its runs; status.py lists the most recently changed run first.
+        A run stays active after its issue closes (a merge closes it) until the coordination session closes
+        the run, so a run whose issue is not in the open list adds a row for that issue after the open ones."""
+        issues = list(self.open_issues)
+        if self.coordinator:
+            runs = self.own_runs()
+            for issue in issues:
+                issue.run = next((r for r in runs if r.issue == str(issue.number)), None)
+            if self.listed:
+                shown = {i.number for i in issues}
+                for run in runs:
+                    if not run.issue.isdigit() or int(run.issue) in shown:
+                        continue
+                    number = int(run.issue)
+                    shown.add(number)
+                    issues.append(self.missing_issue(number, run))
+        self.issues = issues
+
+    def missing_issue(self, number: int, run: Run) -> Issue:
+        """The row for issue `number`, which has `run` but is not in the open list."""
+        found = self.lookups.get(number)
+        if found is not None:
+            return Issue(number, found.title, run, found.state)
+        self.look_up(number)
+        return Issue(number, self.titles.get(number, ""), run, None)
+
+    def look_up(self, number: int) -> None:
+        if number in self.lookups or self.static or not self.repository:
             return
-        runs = self.own_runs()
-        for issue in self.issues:
-            issue.run = next((r for r in runs if r.issue == str(issue.number)), None)
+        self.lookups[number] = None
+        self.run_worker(self.load_issue(number), group=f"issue-{number}")
+
+    async def load_issue(self, number: int) -> None:
+        try:
+            issue = await self.lookup(self.repository, number)
+        except IssueSourceError as e:
+            issue, message = None, f"issue #{number}: {e}"
+        else:
+            message = ""
+        try:
+            if issue is not None:
+                self.lookups[number] = issue
+                self.set_issues(self.open_issues)
+            self.set_message("lookup", message)
+        except NoMatches:
+            pass  # the app is closing: its widgets are gone
 
     # Selection
 
@@ -243,13 +298,17 @@ class IdeApp(App):
     def update_status(self) -> None:
         issue, run = self.current, self.current.run if self.current else None
         parts = [self.repository or "(no repository)",
-                 f"#{issue.number}" if issue else "no issue",
+                 (f"#{issue.number}" + (" (closed)" if issue.closed else "")) if issue else "no issue",
                  run.name if run else "no run"]
         parts += [m for m in self.messages.values() if m]
         self.query_one("#status", Static).update("  |  ".join(parts))
 
     def action_focus_pane(self, pane: str) -> None:
         self.query_one(f"#{pane}", DataTable).focus()
+
+
+def issue_title(issue: Issue) -> str:
+    return f"(closed) {issue.title}".rstrip() if issue.closed else issue.title
 
 
 def main(argv: Optional[List[str]] = None) -> None:

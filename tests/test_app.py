@@ -251,3 +251,131 @@ async def test_runs_of_other_repositories_are_counted_apart_and_not_attached():
         await settle(app, pilot)
         assert app.current.run.name == "autoflow-sandbox-3-sample"
         assert "1 active runs (2 in other repositories)" in status(app)
+
+
+# A run whose issue is no longer open (#12): merging the PR closes the issue before the coordination session
+# closes the run.
+
+from autoflow_ide.issues import parse_issue
+
+FIXTURES = Path(__file__).parent / "fixtures"
+CLOSED_3 = parse_issue((FIXTURES / "gh-issue-closed.json").read_text())
+
+
+def merged_app(issue_lists, lookup=None, run_loader=None, **kw):
+    """Issue #3 has the recorded run; the loader gives each of `issue_lists` in turn, then the last one."""
+    issue_calls = []
+
+    async def loader(repository):
+        issue_calls.append(repository)
+        return issue_lists[min(len(issue_calls), len(issue_lists)) - 1]
+
+    async def runs(coordinator):
+        return RECORDED_RUNS
+
+    async def found(repository, number):
+        return CLOSED_3
+
+    app = IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c",
+                 run_loader=run_loader or runs, lookup=lookup or found, **kw)
+    return app, issue_calls
+
+
+async def test_a_run_whose_issue_closed_keeps_a_row_marked_closed():
+    lookups = []
+
+    async def lookup(repository, number):
+        lookups.append((repository, number))
+        return CLOSED_3
+
+    app, _ = merged_app([[Issue(4, "four")]], lookup=lookup, run_refresh_sec=0.05)
+    async with app.run_test(size=(160, 30)) as pilot:
+        await settle(app, pilot)
+        await pilot.pause(0.2)
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        assert [str(issues.get_row_at(i)[1]) for i in range(2)] == ["3", "4"]
+        assert str(issues.get_cell("3", "run")) == "●"
+        assert str(issues.get_cell("3", "title")).startswith("(closed) word_count")
+        assert app.current.number == 3 and app.current.closed
+        assert app.query_one("#run", DataTable).row_count == 3
+        assert app.query_one("#sessions", DataTable).row_count == 2
+        assert "#3 (closed)" in status(app) and "autoflow-sandbox-3-sample" in status(app)
+        assert lookups == [("Munsik-Park/autoflow-sandbox", 3)]   # once, not on every run refresh
+
+
+async def test_an_issue_that_left_the_list_keeps_its_title_while_looked_up():
+    import asyncio
+    release = asyncio.Event()
+
+    async def lookup(repository, number):
+        await release.wait()
+        return CLOSED_3
+
+    app, calls = merged_app([[Issue(4, "four"), Issue(3, "three")], [Issue(4, "four")]], lookup=lookup)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.press("r")
+        await pilot.pause(0.1)
+        issues = app.query_one("#issues", DataTable)
+        assert len(calls) == 2 and issues.row_count == 2
+        assert str(issues.get_cell("3", "title")) == "three"
+        assert not app.current.closed
+        release.set()
+        await settle(app, pilot)
+        assert str(issues.get_cell("3", "title")).startswith("(closed) word_count")
+
+
+async def test_a_failed_lookup_shows_on_the_status_line_and_is_retried_on_refresh():
+    attempts = []
+
+    async def lookup(repository, number):
+        attempts.append(number)
+        raise IssueSourceError("gh: Not Found (HTTP 404)")
+
+    app, _ = merged_app([[Issue(4, "four")]], lookup=lookup, run_refresh_sec=0.05)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.pause(0.2)
+        await settle(app, pilot)
+        assert "issue #3: gh: Not Found (HTTP 404)" in status(app)
+        assert attempts == [3]
+        assert app.query_one("#issues", DataTable).row_count == 2    # the run is still shown
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert attempts == [3, 3]
+
+
+async def test_no_row_for_a_run_before_the_open_issues_are_read():
+    async def loader(repository):
+        raise IssueSourceError("gh is not installed")
+
+    async def lookup(repository, number):
+        raise AssertionError("must not look up")
+
+    async def runs(coordinator):
+        return RECORDED_RUNS
+
+    app = IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c", run_loader=runs,
+                 lookup=lookup)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        assert app.query_one("#issues", DataTable).row_count == 0
+        assert "1 active runs" in status(app)
+
+
+async def test_the_closed_row_goes_when_its_run_ends():
+    seen = []
+
+    async def runs(coordinator):
+        seen.append(coordinator)
+        return RECORDED_RUNS if len(seen) <= 2 else []
+
+    app, calls = merged_app([[Issue(4, "four")]], run_loader=runs, run_refresh_sec=0.05)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.pause(0.4)
+        await settle(app, pilot)
+        assert app.query_one("#issues", DataTable).row_count == 1
+        assert app.current.number == 4
+        assert len(calls) >= 2      # the run ending reloaded the issues

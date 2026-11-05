@@ -42,6 +42,12 @@ class Issue:
     number: int
     title: str
     run: Optional[Run] = None
+    # "open" or "closed" as GitHub gives it; None while an issue missing from the open list is being looked up.
+    state: Optional[str] = "open"
+
+    @property
+    def closed(self) -> bool:
+        return self.state == "closed"
 
 
 def placeholder_issues() -> List[Issue]:
