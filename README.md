@@ -36,7 +36,14 @@ Add `--coordinator <autoflow-coordinator clone>` to show the active runs: the ID
 
 `r` reloads the issues.
 
-Tests: `pip install -e '.[test]'` and `pytest`.
+## Tests
+
+`pip install -e '.[test]'`, then `pytest` with the test files to run.
+
+- **CI** (`.github/workflows/test.yml`) runs on every pull request and on main, and a pull request is merged when it passes. It runs only the tests of what the IDE reads from other tools: `tests/test_runs.py` (the coordinator's `status.py` output and `VERSION`), `tests/test_issues.py` (gh output) and `tests/test_focus.py` (the tmux commands). They run on output recorded from those tools (`tests/fixtures/README.md` says from which versions), so they are what breaks when a tool changes.
+- **Screen tests** (`tests/test_app.py`) are not in CI. A pull request runs the ones of what it changes.
+- **One-off checks**, such as replaying a recorded run against a real `status.py`, are not kept as tests. The pull request states what was checked and the result.
+- A new test goes into CI only when it checks what the IDE reads from another tool, on recorded output.
 
 ## License
 
