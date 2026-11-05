@@ -550,3 +550,122 @@ async def test_issues_are_read_again_when_a_step_changes_not_when_only_idle_time
             app.refresh_runs()
             await settle(app, pilot)
             assert len(calls) == count
+
+
+# Closing the coordination session window of a finished issue (#24)
+
+from autoflow_ide.windows import Window
+
+
+class FakeWindows:
+    """Windows by issue; `screens` gives each issue's screens in turn, then the last one."""
+
+    def __init__(self, numbers, screens=None):
+        self.open = {n: Window(f"@{n}", f"autoflow-sandbox#{n}", [f"%{n}"]) for n in numbers}
+        self.screens = screens or {}
+        self.reads = {}
+        self.closed = []
+
+    async def find(self, workspace):
+        assert workspace == "autoflow-sandbox"
+        return dict(self.open)
+
+    async def screen(self, window):
+        number = int(window.name.split("#")[1])
+        self.reads[number] = self.reads.get(number, 0) + 1
+        shown = self.screens.get(number, ["> "])
+        return shown[min(self.reads[number], len(shown)) - 1]
+
+    async def close(self, window):
+        number = int(window.name.split("#")[1])
+        del self.open[number]
+        self.closed.append(window.name)
+
+
+def windows_app(windows, open_issues, runs, lookup, idle=0.2):
+    async def loader(repository):
+        return open_issues
+
+    async def run_loader(coordinator):
+        return runs
+
+    async def workspace_finder(coordinator, repository):
+        return "autoflow-sandbox"
+
+    return IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c", run_loader=run_loader,
+                  lookup=lookup, windows=windows, workspace_finder=workspace_finder,
+                  window_check_sec=0.05, window_idle_sec=idle)
+
+
+def lookup_states(states, asked):
+    async def lookup(repository, number):
+        asked.append(number)
+        return Issue(number, f"issue {number}", state=states[number])
+    return lookup
+
+
+async def test_closes_the_window_of_a_closed_issue_without_a_run_after_its_screen_is_still():
+    asked = []
+    windows = FakeWindows([8], {8: ["writing", "report", "report"]})
+    app = windows_app(windows, [Issue(4, "four")], [], lookup_states({8: "closed"}, asked), idle=0.5)
+    async with app.run_test(size=(160, 24)) as pilot:
+        await settle(app, pilot)
+        await pilot.pause(0.1)
+        assert windows.closed == []                # the screen changed less than window_idle_sec ago
+        await pilot.pause(0.8)
+        await settle(app, pilot)
+        assert windows.closed == ["autoflow-sandbox#8"]
+        assert asked == [8]
+        assert "closed autoflow-sandbox#8: #8 is closed and has no run" in status(app)
+
+
+async def test_keeps_the_window_of_a_closed_issue_while_it_has_a_run():
+    asked = []
+    windows = FakeWindows([3])
+    app = windows_app(windows, [Issue(4, "four")], RECORDED_RUNS, lookup_states({3: "closed"}, asked))
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.pause(0.5)
+        await settle(app, pilot)
+        assert windows.closed == []
+
+
+async def test_keeps_the_window_of_an_open_issue():
+    asked = []
+    windows = FakeWindows([4, 9])
+    # 4 is in the open list; 9 is not (more open issues than listed), and GitHub says it is open.
+    app = windows_app(windows, [Issue(4, "four")], [], lookup_states({9: "open"}, asked))
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.pause(0.5)
+        await settle(app, pilot)
+        assert windows.closed == []
+        assert 4 not in asked
+        assert 1 <= asked.count(9) <= 2            # asked again only after window_idle_sec
+
+
+async def test_keeps_a_window_whose_screen_keeps_changing():
+    asked = []
+    windows = FakeWindows([8], {8: [str(n) for n in range(100)]})
+    app = windows_app(windows, [Issue(4, "four")], [], lookup_states({8: "closed"}, asked))
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.pause(0.5)
+        await settle(app, pilot)
+        assert windows.closed == []
+
+
+async def test_keeps_windows_while_the_runs_cannot_be_read():
+    asked = []
+    windows = FakeWindows([8])
+
+    async def run_loader(coordinator):
+        raise RunSourceError("status.py exited with status 1")
+
+    app = windows_app(windows, [Issue(4, "four")], [], lookup_states({8: "closed"}, asked))
+    app.run_loader = run_loader
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.pause(0.5)
+        await settle(app, pilot)
+        assert windows.closed == [] and asked == []

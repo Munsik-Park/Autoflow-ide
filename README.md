@@ -38,11 +38,13 @@ The open issues are read again every minute, when a step of a run changes its st
 
 `s` starts a run for the highlighted issue, as an operator does by hand: it opens a tmux window named `<workspace>#<issue>` with a shell in the coordinator clone and starts Claude Code there with `Workspace <workspace>, issue #<issue>.` as its first prompt. The workspace is the one in the coordinator's base (`tools/config.py base`) whose `repo.json` names the repository. The coordination session then presents the workflow for approval in that window. `s` again, before the run is prepared, goes back to that window.
 
+The IDE closes such a window when its issue is done: the issue is closed (asked of GitHub) and has no active run, and the window's screen has not changed for a minute, so a last report is not cut off. An issue can take several runs, so a run ending while its issue is open keeps the window. The windows are found by their `<workspace>#<issue>` name, so those opened before the IDE restarted are closed too, and so is one named that way by hand. The status line says when a window is closed; the session can be resumed with `claude --resume` in the coordinator clone.
+
 ## Tests
 
 `pip install -e '.[test]'`, then `pytest` with the test files to run.
 
-- **CI** (`.github/workflows/test.yml`) runs on every pull request and on main, and a pull request is merged when it passes. It runs only the tests of what the IDE reads from other tools: `tests/test_runs.py` (the coordinator's `status.py` output and `VERSION`), `tests/test_issues.py` (gh output), `tests/test_focus.py` and `tests/test_start.py` (the coordinator's `config.py` and the tmux commands). They run on output recorded from those tools (`tests/fixtures/README.md` says from which versions), so they are what breaks when a tool changes.
+- **CI** (`.github/workflows/test.yml`) runs on every pull request and on main, and a pull request is merged when it passes. It runs only the tests of what the IDE reads from other tools: `tests/test_runs.py` (the coordinator's `status.py` output and `VERSION`), `tests/test_issues.py` (gh output), `tests/test_focus.py`, `tests/test_start.py` and `tests/test_windows.py` (the coordinator's `config.py` and the tmux commands). They run on output recorded from those tools (`tests/fixtures/README.md` says from which versions), so they are what breaks when a tool changes.
 - **Screen tests** (`tests/test_app.py`) are not in CI. A pull request runs the ones of what it changes.
 - **One-off checks**, such as replaying a recorded run against a real `status.py`, are not kept as tests. The pull request states what was checked and the result.
 - A new test goes into CI only when it checks what the IDE reads from another tool, on recorded output.

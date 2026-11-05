@@ -21,3 +21,8 @@ Output recorded from autoflow-coordinator `tools/status.py` at v0.7.0-rc2 (commi
 - `status-cycle.json`: a run directory named `autoflow-sandbox-5-cycle` (`ISSUE=5`) with five invocations in its records folder, written in this order: `analysis-1`, `build-1`, `review-1`, `build-2` (input `findings` from `review-1`) and `review-2` (input `previous_findings` from `review-1`), each with a `result.json`; a progress row for each, `review-1` missed and the others pass; three sessions whose processes are gone. `build-2` is a return caused by `review-1` and `review-2` a rerun of it. Recorded with `tools/status.py autoflow-sandbox-5-cycle`.
 - `status-error.json`: a run directory without run.env.
 - `status-none.json`: no active runs.
+
+Output recorded from tmux 3.4 (the operator's Mac has 3.2a):
+
+- `tmux-list-panes.txt`: stdout of `tmux list-panes -a -F '#{window_id} #{pane_id} #{window_name}'`, exit status 0, on a server with a window `ide`, an auto-named one, `autoflow-sandbox#4` split in two panes, `autoflow-sandbox#12`, `opensre#5`, `autoflow-sandbox#4b`, `my autoflow-sandbox#9`, and `autoflow-sandbox#7` in a second session. Windows were created with `new-window -n <name>`, which turns automatic-rename off for them (`show-options -w -v automatic-rename` gives `off`). In a format, tmux 3.4 prints a tab as `_`, so the fields are separated by spaces.
+- a window that is gone (exit status 1): stderr `can't find window: @99`; a pane that is gone: `can't find pane: %99`.

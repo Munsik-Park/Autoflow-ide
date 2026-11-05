@@ -1,0 +1,9 @@
+@0 %0 ide
+@1 %1 bash
+@2 %2 autoflow-sandbox#4
+@2 %3 autoflow-sandbox#4
+@3 %4 autoflow-sandbox#12
+@4 %5 opensre#5
+@5 %6 autoflow-sandbox#4b
+@6 %7 my autoflow-sandbox#9
+@7 %8 autoflow-sandbox#7
