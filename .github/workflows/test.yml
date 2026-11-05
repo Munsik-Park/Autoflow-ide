@@ -1,10 +1,10 @@
 name: test
 
-# Only the tests of what the IDE reads from other tools run here: the output of the coordinator's status.py
-# and VERSION, of gh, and the tmux commands that move focus. They run on recorded output, so they do not
-# depend on timing, and they are what breaks when one of those tools changes (a coordinator rc, a gh
-# release). The screen tests (tests/test_app.py) are not run here; a pull request runs the ones of what it
-# changes. See "Tests" in README.md.
+# Only the tests of what the IDE uses from other tools run here: the output of the coordinator's
+# status.py, VERSION and config.py, of gh, and the tmux commands that move focus and open the coordination
+# session. They run on recorded output, so they do not depend on timing, and they are what breaks when one
+# of those tools changes (a coordinator rc, a gh release). The screen tests (tests/test_app.py) are not run
+# here; a pull request runs the ones of what it changes. See "Tests" in README.md.
 
 on:
   push:
@@ -20,4 +20,4 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e '.[test]'
-      - run: pytest tests/test_runs.py tests/test_issues.py tests/test_focus.py
+      - run: pytest tests/test_runs.py tests/test_issues.py tests/test_focus.py tests/test_start.py
