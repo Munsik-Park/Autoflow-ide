@@ -10,6 +10,13 @@ class Step:
     verdict: Optional[str] = None
     session: Optional[str] = None
     module: Optional[str] = None
+    # null on a module's first run; "return" when a later run's finding sent the flow back to it, "rerun" otherwise
+    entry: Optional[str] = None
+    # the run that sent it back or whose output it runs again on, when the invocation names one
+    cause: Optional[str] = None
+    # the session's state and seconds since its last activity, on a running step only
+    session_state: Optional[str] = None
+    idle_sec: Optional[float] = None
 
     @property
     def name(self) -> str:
