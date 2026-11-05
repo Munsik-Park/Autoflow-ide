@@ -45,7 +45,14 @@ The IDE runs in a tmux pane. The coordination session and the work sessions are 
 
 ## Supported versions
 
-The IDE works against fixed versions of autoflow-coordinator and AutoFlow, as the coordinator works against the AutoFlow version in its `VERSION`. The IDE reads the coordinator's tool output, such as the JSON of `status.py`, in the shape of the supported coordinator version. The supported versions are recorded in this repository when the fixed coordinator version is released, and following a newer version is its own change.
+The IDE works against fixed versions of autoflow-coordinator and AutoFlow, as the coordinator works against the AutoFlow version in its `VERSION`. The IDE reads the coordinator's tool output, such as the JSON of `status.py`, in the shape of the supported coordinator version. Following a newer version is its own change.
+
+| Repository | Supported version |
+|---|---|
+| autoflow-coordinator | v0.7.0-rc1 (`VERSION` 0.7.0-rc1) |
+| autoflow | v0.7.0, the version that coordinator supports |
+
+With `--coordinator`, the IDE reads the clone's `VERSION` and shows on the status line when it differs from the supported one.
 
 ## Stack
 

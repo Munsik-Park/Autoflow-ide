@@ -8,6 +8,10 @@ from typing import List
 from autoflow_ide.model import Run, Session, Step
 
 
+# The coordinator version whose status.py output the IDE reads (the coordinator's VERSION file).
+SUPPORTED_COORDINATOR = "0.7.0-rc1"
+
+
 class RunSourceError(Exception):
     """The runs could not be read; the message is shown to the operator."""
 
@@ -42,3 +46,15 @@ async def coordinator_runs(coordinator: str) -> List[Run]:
         lines = [line.strip() for line in err.decode(errors="replace").splitlines() if line.strip()]
         raise RunSourceError(lines[0] if lines else f"status.py exited with status {proc.returncode}")
     return parse_status(out.decode())
+
+
+def version_notice(coordinator: str) -> str:
+    """Empty when the coordinator clone is at the supported version, otherwise what differs."""
+    path = Path(coordinator).expanduser() / "VERSION"
+    try:
+        version = path.read_text().strip()
+    except OSError:
+        return f"coordinator: no {path}"
+    if version != SUPPORTED_COORDINATOR:
+        return f"coordinator {version}, supported {SUPPORTED_COORDINATOR}"
+    return ""

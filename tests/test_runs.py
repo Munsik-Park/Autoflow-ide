@@ -63,3 +63,18 @@ async def test_coordinator_runs_failure_carries_the_first_line(tmp_path):
 async def test_no_status_py(tmp_path):
     with pytest.raises(RunSourceError, match="no .*status.py"):
         await coordinator_runs(str(tmp_path))
+
+
+from autoflow_ide.runs import SUPPORTED_COORDINATOR, version_notice
+
+
+def test_version_notice(tmp_path):
+    assert version_notice(str(tmp_path)).startswith("coordinator: no ")
+    (tmp_path / "VERSION").write_text(SUPPORTED_COORDINATOR + "\n")
+    assert version_notice(str(tmp_path)) == ""
+    (tmp_path / "VERSION").write_text("0.8.0-rc1\n")
+    assert version_notice(str(tmp_path)) == f"coordinator 0.8.0-rc1, supported {SUPPORTED_COORDINATOR}"
+
+
+def test_supported_version_is_the_recorded_one():
+    assert "v" + SUPPORTED_COORDINATOR in (FIXTURES / "README.md").read_text()

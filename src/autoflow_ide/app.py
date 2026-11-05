@@ -9,7 +9,7 @@ from textual.widgets import DataTable, Footer, Static
 from autoflow_ide.focus import FocusError, focus_surface
 from autoflow_ide.issues import IssueSourceError, gh_issues, repository_from_workspace
 from autoflow_ide.model import Issue, Run, placeholder_issues
-from autoflow_ide.runs import RunSourceError, coordinator_runs
+from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
 
 IssueLoader = Callable[[str], Awaitable[List[Issue]]]
 RunLoader = Callable[[str], Awaitable[List[Run]]]
@@ -70,6 +70,7 @@ class IdeApp(App):
         if not self.static:
             self.action_refresh_issues()
         if self.coordinator:
+            self.set_message("version", version_notice(self.coordinator))
             self.refresh_runs()
             self.set_interval(self.run_refresh_sec, self.refresh_runs)
 
