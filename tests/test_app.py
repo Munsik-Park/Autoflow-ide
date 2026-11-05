@@ -44,3 +44,51 @@ async def test_no_issues():
     async with app.run_test() as pilot:
         await pilot.pause()
         assert "no issue" in str(app.query_one("#status", Static).render())
+
+
+from autoflow_ide.issues import IssueSourceError
+
+
+def status(app):
+    return str(app.query_one("#status", Static).render())
+
+
+async def test_loads_issues_of_the_repository():
+    calls = []
+
+    async def loader(repository):
+        calls.append(repository)
+        return [Issue(3, "three"), Issue(4, "four")]
+
+    app = IdeApp(repository="owner/name", loader=loader)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert calls == ["owner/name"]
+        assert app.query_one("#issues", DataTable).row_count == 2
+        assert "2 open issues" in status(app) and "#3" in status(app)
+        await pilot.press("r")
+        await app.workers.wait_for_complete()
+        assert calls == ["owner/name", "owner/name"]
+
+
+async def test_load_failure_shows_on_the_status_line():
+    async def loader(repository):
+        raise IssueSourceError("gh is not installed")
+
+    app = IdeApp(repository="owner/name", loader=loader)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "issues: gh is not installed" in status(app)
+        assert app.query_one("#issues", DataTable).row_count == 0
+
+
+async def test_without_a_repository_nothing_is_loaded():
+    async def loader(repository):
+        raise AssertionError("must not load")
+
+    app = IdeApp(loader=loader)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "no repository" in status(app)

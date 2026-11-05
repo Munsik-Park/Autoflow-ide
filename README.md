@@ -27,10 +27,12 @@ The IDE uses the coordinator through its command-line tools and their output. It
 
 ```
 pip install -e .
-autoflow-ide
+autoflow-ide --repo owner/name          # open issues of a repository
+autoflow-ide --workspace <workspace>    # the repository named in a coordinator workspace's repo.json
+autoflow-ide --demo                     # placeholder data
 ```
 
-The screen shows placeholder data until the issue and run sources are connected (see the milestones in [docs/design.md](docs/design.md)).
+`r` reloads the issues. The run and sessions panes are connected in later milestones (see [docs/design.md](docs/design.md)).
 
 Tests: `pip install -e '.[test]'` and `pytest`.
 
