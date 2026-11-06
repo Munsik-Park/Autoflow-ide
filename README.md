@@ -47,6 +47,8 @@ The open issues are read again every minute, when a step of a run changes its st
 
 The IDE closes such a window when its issue is done: the issue is closed (asked of GitHub) and has no active run, and the window's screen has not changed for 5 minutes, so a last report is not cut off and the operator can come back to the session after a merge (while it waits for input, its screen does not change). An issue can take several runs, so a run ending while its issue is open keeps the window. The windows are found by their `<workspace>#<issue>` name, so those opened before the IDE restarted are closed too, and so is one named that way by hand. The status line says when a window is closed; the session can be resumed with `claude --resume` in the coordinator clone.
 
+The status line starts with a notice of something that just happened (a coordination session opened, a window closed, a focus moved, an issue found by `#`), so a narrow terminal does not cut it off, and the notice goes 10 seconds later. Then come the repository, the issue (with what it is when not an open issue: `#2 (closed PR)`) and the run, and what is true now: the issue and run counts, a read error until the next read succeeds.
+
 ## Tests
 
 `pip install -e '.[test]'`, then `pytest` with the test files to run.
