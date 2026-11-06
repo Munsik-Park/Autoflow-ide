@@ -22,6 +22,10 @@ class Step:
     # the status in that folder's result.json (accepted, refused or failed); null until it is written or
     # when it cannot be read
     result: Optional[str] = None
+    # the Verdict and Notes cells of the row the step comes from, whole as written ("" when empty); null on a step
+    # with no row, and notes null when the table has no Notes column (from coordinator v0.7.0-rc8)
+    verdict_text: Optional[str] = None
+    notes: Optional[str] = None
 
     @property
     def name(self) -> str:

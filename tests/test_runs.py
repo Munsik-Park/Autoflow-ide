@@ -38,6 +38,16 @@ def test_parse_recorded_results():
         ("↺ review-3 ← review-1", "fail", "failed", records + "review-3"),
         ("↺ review-4 ← review-1", "running", None, records + "review-4"),
     ]
+    assert [(s.verdict, s.verdict_text, s.notes) for s in run.steps] == [
+        ("pass", "pass", ""),
+        ("pass", "pass", ""),
+        ("goal missed", "goal missed: F1 holds (Medium)", "F1 to build-2 as its findings"),
+        ("pass", "pass", "findings review-1/review-findings.md"),
+        ("pass", "pass, checks green on head c91b443 | 2 jobs", ""),     # an escaped pipe, read as |
+        ("awaiting verdict", "", "pr given as 8: refused at check-in"),  # a row with no verdict yet
+        ("goal not met", "goal not met", "reached its timeout, 900 s"),
+        (None, None, None),                                               # no row
+    ]
     assert (run.checkout, run.records) == (
         "/home/claude/fx/base/autoflow-sandbox/autoflow-sandbox-wt-6-results", records.rstrip("/"))
 
@@ -47,6 +57,7 @@ def test_before_rc5_a_step_has_no_out_or_result_and_before_rc6_a_run_no_checkout
     assert {(s.out, s.result) for s in run.steps} == {(None, None)}
     [coordination] = parse_status(fixture("status-coordination.json"))   # rc4
     assert (coordination.checkout, coordination.records) == (None, None)
+    assert {(s.verdict_text, s.notes) for s in run.steps} == {(None, None)}   # rc2: before rc8
 
 
 def test_parse_recorded_coordination_surface():

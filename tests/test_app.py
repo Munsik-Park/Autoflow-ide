@@ -845,3 +845,38 @@ async def test_info_keeps_the_start_and_end_of_the_worktree_at_121_columns():
         assert worktree.startswith("worktree  /nowhere/coord") and "…" in worktree and worktree.endswith("165619-8a269048")
         assert next(l for l in lines if l.startswith("run")).rstrip().endswith("165619-8a269048")
         assert app.query_one("#run-pane").border_title == "Run"          # the run name is in the info
+
+
+# The row's Verdict and Notes cells in the detail (#40)
+
+from autoflow_ide.detail import row_cells
+
+
+def test_row_cells_show_what_the_verdict_and_the_table_leave_out():
+    step = Step("F1 fix (outside AutoFlow)", "pass", "pass", "X1",
+                verdict_text="pass, head 253901c pushed (= PR head); COORDINATOR.md line 58 only", notes="")
+    assert row_cells(step) == [("Verdict, as the run record has it",
+                                "pass, head 253901c pushed (= PR head); COORDINATOR.md line 58 only")]
+    plain = Step("s1", "pass", "pass", "S1", "review", verdict_text="Pass", notes="pr #65, timeout 1800")
+    assert row_cells(plain) == [("Notes", "pr #65, timeout 1800")]          # the cell says no more than pass
+    assert row_cells(Step("no row yet", "running", None, "X1")) == []          # no row: both null
+    assert row_cells(Step("s2", "running", None, "S1", "review", verdict_text="", notes=None)) == []
+
+
+async def test_the_detail_shows_the_row_cells_above_the_output_folder():
+    steps = [Step("F1 fix (outside AutoFlow)", "pass", "pass", "X1", verdict_text="pass, [head] 253901c pushed",
+                  notes="x1-2-instruction.txt"),
+             Step("review-1", "fail", "goal missed", "S3", "review", out=str(RECORDS / "review-1"), result="accepted",
+                  verdict_text="goal missed: F1 holds (Medium)", notes="F1 fixed by X1, then re-review")]
+    app = results_app(steps)
+    async with app.run_test(size=(140, 40)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("2", "enter")
+        await pilot.pause()
+        text = detail_text(app)
+        assert "pass, [head] 253901c pushed" in text                          # as written, not read as markup
+        assert "Notes" in text and "x1-2-instruction.txt" in text and "No module run" in text
+        await pilot.press("escape", "down", "enter")
+        await pilot.pause()
+        text = detail_text(app)
+        assert text.index("F1 fixed by X1") < text.index("Review findings (review-findings.md)")
