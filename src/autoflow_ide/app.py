@@ -10,11 +10,12 @@ from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from rich.cells import cell_len
 from rich.text import Text
-from textual.widgets import DataTable, Footer, Static
+from textual.widgets import DataTable, Footer, Input, Static
 
 from autoflow_ide.detail import StepDetail, home_short
 from autoflow_ide.focus import FocusError, focus_surface
-from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repository_from_workspace, workspace_issues
+from autoflow_ide.issues import (IssueSourceError, gh_issue, gh_issues, repository_from_workspace, search_issues,
+                                 workspace_issues)
 from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
 from autoflow_ide.start import (StartError, Workspace, coordinator_workspace, coordinator_workspace_entry,
@@ -30,6 +31,7 @@ IssueLookup = Callable[[str, int], Awaitable[Issue]]
 RunLoader = Callable[[str], Awaitable[List[Run]]]
 Focuser = Callable[[str], Awaitable[None]]
 Starter = Callable[[str, str, int], Awaitable[str]]
+Searcher = Callable[[str, str], Awaitable[List[Issue]]]
 WorkspaceReader = Callable[[str, str], Awaitable[Workspace]]
 Placer = Callable[[], Awaitable[Dict[str, str]]]
 WorkspacesReader = Callable[[str], Awaitable[List[Workspace]]]
@@ -70,6 +72,8 @@ class Group:
     # The open issues as listed, and those with the runs attached plus a row per run whose issue is not listed.
     open_issues: List[Issue] = field(default_factory=list)
     issues: List[Issue] = field(default_factory=list)
+    # Issues found by their number or words (`#`, `/`), shown after its own until the next find or Esc.
+    extra: List[Issue] = field(default_factory=list)
     # Whether its open issues have been read: until then, an issue with a run cannot be told to be missing.
     listed: bool = False
     # Why its open issues could not be read, the last time.
@@ -97,6 +101,9 @@ class IdeApp(App):
         ("r", "refresh_issues", "Refresh"),
         ("s", "start_run", "Start run"),
         ("a", "toggle_running", "Running only"),
+        ("number_sign", "find('number')", "Issue #"),
+        ("slash", "find('words')", "Find"),
+        ("escape", "close_find", "Clear found"),
         ("q", "quit", "Quit"),
     ]
 
@@ -109,7 +116,7 @@ class IdeApp(App):
                  window_check_sec: float = WINDOW_CHECK_SEC, window_idle_sec: float = WINDOW_IDLE_SEC,
                  workspace_reader: Optional[WorkspaceReader] = None, placer: Optional[Placer] = None,
                  version: Optional[str] = None, workspaces_reader: Optional[WorkspacesReader] = None,
-                 state_file: Optional[Path] = None):
+                 state_file: Optional[Path] = None, searcher: Optional[Searcher] = None):
         """With `issues`, show them as given. Otherwise load the open issues of `repository` with `loader`,
         again every `issue_refresh_sec` seconds; without `repository` but with `coordinator`, the most recent
         open issues of every workspace of the coordinator's base (`workspaces_reader`), under a row per workspace.
@@ -120,7 +127,8 @@ class IdeApp(App):
         `workspace_reader` reads that workspace's repo.json and `placer` where each tmux pane is, both shown
         above the run pane.
         `version`, the IDE's own (see version.py), is shown in the bottom-right corner.
-        `state_file` keeps the workspaces chosen recently, which open unfolded with those that have a run."""
+        `state_file` keeps the workspaces chosen recently, which open unfolded with those that have a run.
+        `searcher` finds the open issues of a repository for words (`/`)."""
         super().__init__()
         self.version = version
         self.static = issues is not None
@@ -142,6 +150,9 @@ class IdeApp(App):
         self.folded: Set[str] = set()
         # Only the issues with a run, across workspaces and regardless of folding (`a`).
         self.running_only = False
+        self.searcher = searcher or search_issues
+        # What the find box is open for: ("number" or "words", repository).
+        self.finding: Optional[Tuple[str, str]] = None
         self.state_file = state_file
         self.recent: List[str] = read_recent(state_file) if state_file else []
         self.lookup = lookup or gh_issue
@@ -185,6 +196,7 @@ class IdeApp(App):
             with Vertical(id="issues-pane", classes="pane") as pane:
                 pane.border_title = "Issues"
                 yield DataTable(id="issues", cursor_type="row")
+                yield Input(id="find")
             with Vertical(id="run-pane", classes="pane") as pane:
                 pane.border_title = "Run"
                 yield Static(id="info")
@@ -198,6 +210,7 @@ class IdeApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        self.query_one("#find", Input).display = False
         self.query_one("#issues", DataTable).focus()
         self.show_issues()
         if not self.static:
@@ -487,10 +500,12 @@ class IdeApp(App):
         the run, so a run whose issue is not in the open list adds a row for that issue after the open ones."""
         if not self.coordinator:
             for group in self.groups:
-                group.issues = list(group.open_issues)
+                listed = {i.number for i in group.open_issues}
+                group.issues = list(group.open_issues) + [i for i in group.extra if i.number not in listed]
             return
         for group in self.groups:
-            issues = list(group.open_issues)
+            listed = {i.number for i in group.open_issues}
+            issues = list(group.open_issues) + [i for i in group.extra if i.number not in listed]
             runs = [r for r in self.runs if self.run_repository(r) == group.repository]
             for issue in issues:
                 issue.run = next((r for r in runs if r.issue == str(issue.number)), None)
@@ -671,6 +686,97 @@ class IdeApp(App):
             steps = self.current.run.steps if self.current and self.current.run else []
             if 0 <= event.cursor_row < len(steps):
                 self.push_screen(StepDetail(steps[event.cursor_row], event.cursor_row + 1), self.go_to_step)
+
+    # Finding an issue by its number or words, in the highlighted workspace
+
+    def action_find(self, mode: str) -> None:
+        group = self.current_group()
+        if self.static or group is None or not group.repository:
+            self.set_message("find", "find: no repository to look in")
+            return
+        self.finding = (mode, group.repository)
+        box = self.query_one("#find", Input)
+        box.placeholder = f"#number in {group.name}" if mode == "number" else f"words in {group.name}"
+        box.restrict = r"[0-9]*" if mode == "number" else None
+        box.value = ""
+        box.display = True
+        box.focus()
+
+    def action_close_find(self) -> None:
+        """Esc: close the find box, or else clear what was found."""
+        box = self.query_one("#find", Input)
+        if box.display:
+            self.end_find()
+            return
+        if any(g.extra for g in self.groups):
+            for group in self.groups:
+                group.extra = []
+            self.show_issues()
+            self.set_message("find", "")
+
+    def end_find(self) -> None:
+        self.finding = None
+        self.query_one("#find", Input).display = False
+        self.query_one("#issues", DataTable).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "find" or self.finding is None:
+            return
+        mode, repository = self.finding
+        text = event.value.strip()
+        self.end_find()
+        if not text:
+            return
+        if mode == "number":
+            self.run_worker(self.find_number(repository, int(text)), group="find", exclusive=True)
+        else:
+            self.run_worker(self.find_words(repository, text), group="find", exclusive=True)
+
+    async def find_number(self, repository: str, number: int) -> None:
+        """Issue `number` of `repository`: from its listed issues, or else looked up and shown with them."""
+        group, key = self.group_of(repository), (repository, number)
+        if group is None:
+            return
+        found = next((i for i in group.issues if i.number == number), None)
+        if found is None:
+            self.set_message("find", f"looking up {self.label(key)}")
+            try:
+                found = await self.lookup(repository, number)
+            except IssueSourceError as e:
+                self.set_message("find", f"{self.label(key)}: {e}")
+                return
+            found.repository = repository
+            group.extra = [found]
+        self.set_message("find", f"{self.label(key)} is closed" if found.closed else "")
+        self.show_found(group, found)
+
+    async def find_words(self, repository: str, words: str) -> None:
+        """The open issues of `repository` GitHub finds for `words`, shown with its listed ones."""
+        group = self.group_of(repository)
+        if group is None:
+            return
+        self.set_message("find", f"finding \"{words}\" in {group.name}")
+        try:
+            found = await self.searcher(repository, words)
+        except IssueSourceError as e:
+            self.set_message("find", f"find: {e}")
+            return
+        for issue in found:
+            issue.repository = repository
+        group.extra = found
+        self.set_message("find", f"{len(found)} found for \"{words}\" in {group.name}" if found
+                         else f"nothing found for \"{words}\" in {group.name}")
+        if found:
+            self.show_found(group, found[0])
+
+    def show_found(self, group: Group, issue: Issue) -> None:
+        """Show `group` unfolded, in every mode, with the cursor on `issue`."""
+        if self.running_only:
+            self.action_toggle_running()
+        self.folded.discard(group.repository)
+        self.on_header = None
+        self.current = issue
+        self.show_issues()
 
     def action_toggle_running(self) -> None:
         """Show only the issues with a run, or all again."""

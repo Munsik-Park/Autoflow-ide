@@ -51,10 +51,22 @@ async def run_gh(*args: str) -> str:
     return out.decode()
 
 
-async def gh_issues(repository: str, limit: int = 100) -> List[Issue]:
-    """The open issues of `repository` (owner/name)."""
-    return parse_issue_list(await run_gh(
-        "issue", "list", "--repo", repository, "--state", "open", "--limit", str(limit), "--json", FIELDS))
+# How many open issues a search for words lists.
+SEARCH_LIMIT = 10
+
+
+async def gh_issues(repository: str, limit: int = 100, search: str = "") -> List[Issue]:
+    """The open issues of `repository` (owner/name); with `search`, those GitHub finds for those words among
+    all its open issues."""
+    args = ["issue", "list", "--repo", repository, "--state", "open", "--limit", str(limit)]
+    if search:
+        args += ["--search", search]
+    return parse_issue_list(await run_gh(*args, "--json", FIELDS))
+
+
+async def search_issues(repository: str, words: str) -> List[Issue]:
+    """The open issues of `repository` GitHub finds for `words`."""
+    return await gh_issues(repository, limit=SEARCH_LIMIT, search=words)
 
 
 async def workspace_issues(repositories: Sequence[str],
