@@ -5,7 +5,7 @@ import stat
 import pytest
 
 from autoflow_ide.start import (Setting, StartError, Workspace, coordinator_base, coordinator_workspaces,
-                                find_workspace, find_workspace_entry, instruction, list_workspaces, open_coordination,
+                                create_workspace, is_repository, find_workspace, find_workspace_entry, instruction, list_workspaces, open_coordination,
                                 parse_config, setting_source, start_run, workspace_base)
 
 FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
@@ -136,6 +136,35 @@ async def test_start_run(tmp_path, monkeypatch):
     calls = log.read_text().splitlines()
     assert calls[0] == f"new-window -c {clone} -n autoflow-sandbox#4 -P -F #{{pane_id}}"
     assert calls[1].endswith("claude 'Workspace autoflow-sandbox, issue #4.'")
+
+
+async def test_create_workspace_opens_a_coordination_session_named_apart_from_issue_windows(tmp_path, monkeypatch):
+    base = tmp_path / "base"
+    workspace(base, "autoflow-sandbox", "Munsik-Park/autoflow-sandbox")
+    clone = coordinator_clone(tmp_path, base)
+    log = fake_tmux(tmp_path, monkeypatch)
+    assert await create_workspace(clone, "Munsik-Park/opensre") == "%7"
+    assert log.read_text().splitlines() == [
+        f"new-window -c {clone} -n workspace:Munsik-Park/opensre -P -F #{{pane_id}}",
+        "send-keys -t %7 -l -- claude 'Create a workspace for Munsik-Park/opensre.'",
+        "send-keys -t %7 Enter",
+    ]
+
+
+async def test_create_workspace_opens_nothing_when_one_names_the_repository(tmp_path, monkeypatch):
+    base = tmp_path / "base"
+    workspace(base, "sandbox", "Munsik-Park/autoflow-sandbox")
+    log = fake_tmux(tmp_path, monkeypatch)
+    with pytest.raises(StartError, match="Munsik-Park/autoflow-sandbox already has a workspace: sandbox"):
+        await create_workspace(coordinator_clone(tmp_path, base), "Munsik-Park/autoflow-sandbox")
+    assert not log.exists()
+
+
+def test_repository_is_owner_slash_name():
+    for good in ("Munsik-Park/autoflow-sandbox", "a/b", "owner/name.with_dots-1"):
+        assert is_repository(good), good
+    for bad in ("", "autoflow", "owner/", "/name", "-owner/name", "owner/name/extra", "owner/..", "own er/name"):
+        assert not is_repository(bad), bad
 
 
 def test_config_settings_and_where_each_was_set():

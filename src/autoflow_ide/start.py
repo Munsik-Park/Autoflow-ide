@@ -9,6 +9,7 @@ a shell), and the coordination session presents the workflow for approval before
 import asyncio
 import json
 import os
+import re
 import shlex
 import sys
 from dataclasses import dataclass
@@ -174,3 +175,33 @@ async def start_run(coordinator: str, repository: str, issue: int) -> str:
     """Open the coordination session for `issue` of `repository`; returns its pane id."""
     workspace = await coordinator_workspace(coordinator, repository)
     return await open_coordination(coordinator, window_name(workspace, issue), instruction(workspace, issue))
+
+
+# Adding a workspace: the operator gives the repository; the coordination session asks for the rest (the clone, the
+# base branch) and writes the workspace (the coordinator's WORKSPACE.md, "Creating").
+
+# A GitHub repository as owner/name.
+REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+")
+
+
+def is_repository(text: str) -> bool:
+    return bool(REPOSITORY.fullmatch(text)) and text.split("/")[1] not in (".", "..")
+
+
+def workspace_instruction(repository: str) -> str:
+    """The operator's first instruction to a coordination session that makes a workspace."""
+    return f"Create a workspace for {repository}."
+
+
+def workspace_window_name(repository: str) -> str:
+    """Not `<workspace>#<issue>`, so the IDE does not take it for an issue's window and close it."""
+    return f"workspace:{repository}"
+
+
+async def create_workspace(coordinator: str, repository: str) -> str:
+    """Open a coordination session that makes a workspace for `repository` in the coordinator's base; returns its
+    pane id. Nothing is opened when a workspace of the base already names that repository."""
+    found = [w.name for w in await coordinator_workspaces(coordinator) if w.github == repository]
+    if found:
+        raise StartError(f"{repository} already has a workspace: {', '.join(found)}")
+    return await open_coordination(coordinator, workspace_window_name(repository), workspace_instruction(repository))
