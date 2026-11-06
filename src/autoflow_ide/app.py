@@ -321,6 +321,10 @@ class IdeApp(App):
             else:
                 rows += [(self.row_key(i), [RUN_MARK if i.run else "", str(i.number), issue_title(i)]) for i in issues]
         fill(table, EVERY_ISSUE_COLUMNS if self.every else ISSUE_COLUMNS, rows)
+        # With only running issues shown and none to show, the empty pane says why.
+        none = self.running_only and not any(self.shown(g) for g in self.groups)
+        if none or self.messages.get("running"):
+            self.set_message("running", "no issue has a run" if none else "")
         current = self.current_in()
         if current:
             table.move_cursor(row=table.get_row_index(self.row_key(current)))

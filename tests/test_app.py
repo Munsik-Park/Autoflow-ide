@@ -1236,3 +1236,27 @@ async def test_hash_with_one_repository():
         await pilot.press("number_sign", "9", "enter")
         await settle(app, pilot)
         assert app.current.number == 9 and app.current.repository == "Munsik-Park/autoflow-sandbox"
+
+
+async def test_a_with_no_run_says_so_until_one_starts():
+    runs = []
+
+    async def run_loader(coordinator):
+        return list(runs)
+
+    app = every_app(run_loader=run_loader, run_refresh_sec=0.05)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("a")
+        await settle(app, pilot)
+        assert keys(app.query_one("#issues", DataTable)) == [] and "no issue has a run" in status(app)
+        runs.append(SANDBOX_3)
+        await pilot.pause(0.2)
+        await settle(app, pilot)
+        assert "no issue has a run" not in status(app)
+        runs.clear()
+        await pilot.pause(0.2)
+        await settle(app, pilot)
+        await pilot.press("a")
+        await settle(app, pilot)
+        assert "no issue has a run" not in status(app)
