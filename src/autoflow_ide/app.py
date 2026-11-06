@@ -557,6 +557,8 @@ class IdeApp(App):
         key = issue_key(issue)
         if self.static or not self.coordinator or not issue.repository:
             self.set_message("start", "start: needs --coordinator and --repo or --workspace")
+        elif issue.pull:
+            self.set_message("start", f"{self.label(key)} is a pull request")
         elif issue.closed:
             self.set_message("start", f"{self.label(key)} is closed")
         elif issue.run:
@@ -739,12 +741,9 @@ class IdeApp(App):
             except IssueSourceError as e:
                 self.set_message("find", f"{self.label(key)}: {e}")
                 return
-            if found.pull:
-                self.set_message("find", f"{self.label(key)} is a pull request")
-                return
             found.repository = repository
             group.extra = [found]
-        self.set_message("find", f"{self.label(key)} is closed" if found.closed else "")
+        self.set_message("find", "")
         self.show_found(group, found)
 
     def show_found(self, group: Group, issue: Issue) -> None:
@@ -949,7 +948,10 @@ def take(value: str, cells: int) -> str:
 
 
 def issue_title(issue: Issue) -> str:
-    return f"(closed) {issue.title}".rstrip() if issue.closed else issue.title
+    """The title, after what the number is when it is not an open issue: a number found by `#` can be a closed
+    issue or a pull request."""
+    kind = ("closed PR" if issue.closed else "PR") if issue.pull else ("closed" if issue.closed else "")
+    return f"({kind}) {issue.title}".rstrip() if kind else issue.title
 
 
 def main(argv: Optional[List[str]] = None) -> None:
