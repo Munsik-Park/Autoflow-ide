@@ -2,11 +2,15 @@
 import asyncio
 import json
 from pathlib import Path
-from typing import List
+from typing import Awaitable, Callable, Dict, List, Sequence, Union
 
 from autoflow_ide.model import Issue
 
 FIELDS = "number,title"
+# How many open issues of each workspace the issues pane lists: the most recent ones, newest first, as gh lists
+# them. The pane is where an issue is started and watched, not where the work is chosen; an issue further down
+# is reached by its number or words (issue #44).
+RECENT_ISSUES = 5
 # One issue through the REST API (gh issue view needs GraphQL); state is "open" or "closed".
 ISSUE_JQ = "{number: .number, title: .title, state: .state}"
 
@@ -51,6 +55,20 @@ async def gh_issues(repository: str, limit: int = 100) -> List[Issue]:
     """The open issues of `repository` (owner/name)."""
     return parse_issue_list(await run_gh(
         "issue", "list", "--repo", repository, "--state", "open", "--limit", str(limit), "--json", FIELDS))
+
+
+async def workspace_issues(repositories: Sequence[str],
+                           loader: Callable[..., Awaitable[List[Issue]]] = gh_issues,
+                           limit: int = RECENT_ISSUES) -> Dict[str, Union[List[Issue], IssueSourceError]]:
+    """The `limit` most recent open issues of each repository, read at the same time, by repository in the
+    given order; a repository that could not be read has its error instead, so the others still show."""
+    async def one(repository: str) -> Union[List[Issue], IssueSourceError]:
+        try:
+            return await loader(repository, limit=limit)
+        except IssueSourceError as e:
+            return e
+    results = await asyncio.gather(*(one(r) for r in repositories))
+    return dict(zip(repositories, results))
 
 
 async def gh_issue(repository: str, number: int) -> Issue:
