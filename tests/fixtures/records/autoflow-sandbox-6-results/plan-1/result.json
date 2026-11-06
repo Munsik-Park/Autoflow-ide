@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "module": "plan",
+  "status": "accepted",
+  "outputs": {
+    "evaluation": "/Users/boggle70/.autoflow/coordination/records/autoflow-sandbox-4-2026-11-05-220513-295dbab3/plan-1/evaluation.json"
+  },
+  "defects": [],
+  "tool_requests": [],
+  "autoflow": {
+    "version": "0.7.0",
+    "root": "/Users/boggle70/.claude/plugins/cache/autoflow/autoflow/0.7.0"
+  }
+}

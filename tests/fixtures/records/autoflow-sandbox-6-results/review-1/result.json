@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "module": "review",
+  "status": "accepted",
+  "outputs": {
+    "reviews": [
+      "/Users/boggle70/.autoflow/coordination/records/autoflow-sandbox-4-2026-11-05-220513-295dbab3/review-1/reviews/claude.md",
+      "/Users/boggle70/.autoflow/coordination/records/autoflow-sandbox-4-2026-11-05-220513-295dbab3/review-1/reviews/codex.md"
+    ],
+    "findings": "/Users/boggle70/.autoflow/coordination/records/autoflow-sandbox-4-2026-11-05-220513-295dbab3/review-1/review-findings.md"
+  },
+  "defects": [],
+  "tool_requests": [],
+  "autoflow": {
+    "version": "0.7.0",
+    "root": "/Users/boggle70/.claude/plugins/cache/autoflow/autoflow/0.7.0"
+  }
+}

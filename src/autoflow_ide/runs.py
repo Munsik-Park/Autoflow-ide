@@ -21,12 +21,14 @@ class RunSourceError(Exception):
 
 def parse_status(text: str) -> List[Run]:
     """Runs from the JSON of status.py: {"runs": [{"name", "issue", "branch", "reference", "steps", "coordination",
-    "sessions", "error"?}]}, coordination being {"surface"} or null (from v0.7.0-rc3; absent before)."""
+    "sessions", "error"?}]}, coordination being {"surface"} or null (from v0.7.0-rc3; absent before), and each
+    step's out and result its output folder and result status (from v0.7.0-rc5; absent before)."""
     try:
         runs = []
         for r in json.loads(text)["runs"]:
             steps = [Step(s["label"], s["state"], s.get("verdict"), s.get("session"), s.get("module"),
-                          s.get("entry"), s.get("cause"), s.get("session_state"), s.get("idle_sec"))
+                          s.get("entry"), s.get("cause"), s.get("session_state"), s.get("idle_sec"),
+                          s.get("out"), s.get("result"))
                      for s in r.get("steps", [])]
             sessions = [Session(s["name"], s["state"], s.get("surface")) for s in r.get("sessions", [])]
             coordination = r.get("coordination") or {}

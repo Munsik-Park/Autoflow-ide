@@ -1,0 +1,16 @@
+{
+  "contract": 1,
+  "module": "review",
+  "status": "refused",
+  "outputs": {},
+  "defects": [
+    "param 'pr' does not match ^[^/]+/[^#]+#[0-9]+$: 8"
+  ],
+  "tool_requests": [],
+  "autoflow": {
+    "version": "0.7.0",
+    "root": "/home/claude/autoflow",
+    "head": "cc5f0478fb503a8f18a5c29d7c3d57bdd9be7576",
+    "dirty": false
+  }
+}

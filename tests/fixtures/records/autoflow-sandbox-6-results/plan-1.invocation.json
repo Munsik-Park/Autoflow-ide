@@ -1,0 +1,9 @@
+{
+  "contract": 1,
+  "module": "plan",
+  "params": {
+    "issue": 6
+  },
+  "inputs": {},
+  "out": "/home/claude/fx/records/autoflow-sandbox-6-results/plan-1"
+}
