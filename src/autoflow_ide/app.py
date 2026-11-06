@@ -96,6 +96,7 @@ class IdeApp(App):
         ("3", "focus_pane('sessions')", "Sessions"),
         ("r", "refresh_issues", "Refresh"),
         ("s", "start_run", "Start run"),
+        ("a", "toggle_running", "Running only"),
         ("q", "quit", "Quit"),
     ]
 
@@ -139,6 +140,8 @@ class IdeApp(App):
         self.workspaces_reader = workspaces_reader or coordinator_workspaces
         # The folded workspaces, by repository; the recently chosen ones, by workspace name, most recent first.
         self.folded: Set[str] = set()
+        # Only the issues with a run, across workspaces and regardless of folding (`a`).
+        self.running_only = False
         self.state_file = state_file
         self.recent: List[str] = read_recent(state_file) if state_file else []
         self.lookup = lookup or gh_issue
@@ -259,18 +262,29 @@ class IdeApp(App):
     def current_in(self) -> Optional[Issue]:
         """The highlighted issue if it is still listed, otherwise the first one in display order; none while the
         cursor is on a workspace row."""
-        if self.on_header is not None and self.group_of(self.on_header):
+        if self.on_header is not None and self.on_header in self.headers():
             return None
         key = issue_key(self.current) if self.current else None
         ordered = self.ordered()
         found = next((i for i in ordered if issue_key(i) == key), None)
-        if found is None and self.current is not None and self.current.repository in self.folded:
+        if (found is None and self.current is not None and not self.running_only
+                and self.current.repository in self.folded):
             return None  # its workspace was folded: the cursor goes to the workspace's row
         return found or (ordered[0] if ordered else None)
 
     def shown(self, group: Group) -> List[Issue]:
-        """The rows of `group` under its own: none when folded, those with a run first."""
+        """The rows of `group` under its own: none when folded, those with a run first; only those with a run
+        when only running issues are shown, folded or not."""
+        if self.running_only:
+            return [i for i in group.issues if i.run]
         return [] if group.repository in self.folded else sorted(group.issues, key=lambda i: i.run is None)
+
+    def headers(self) -> List[str]:
+        """The workspaces whose row is shown, by repository: all of them, or those with a run when only running
+        issues are shown."""
+        if not self.every:
+            return []
+        return [g.repository for g in self.groups if not self.running_only or self.shown(g)]
 
     def ordered(self) -> List[Issue]:
         """The issues shown, in their groups, those with a run first in each, each part in the order the source
@@ -280,10 +294,13 @@ class IdeApp(App):
     def render_issues(self) -> None:
         table = self.query_one("#issues", DataTable)
         rows: List[Tuple[Optional[str], List[Union[str, Text]]]] = []
+        headers = self.headers()
         for group in self.groups:
             issues = self.shown(group)
             if self.every:
-                folded = group.repository in self.folded
+                if group.repository not in headers:
+                    continue
+                folded = group.repository in self.folded and not self.running_only
                 rows.append((group.repository, [FOLDED_MARK if folded else UNFOLDED_MARK,
                                                  Text(group_title(group, folded), style="bold")]))
                 rows += [(self.row_key(i), [RUN_MARK if i.run else "", f"{i.number}  {issue_title(i)}"])
@@ -294,10 +311,10 @@ class IdeApp(App):
         current = self.current_in()
         if current:
             table.move_cursor(row=table.get_row_index(self.row_key(current)))
-        elif self.every and self.groups:
+        elif headers:
             # On a workspace's row: the one the cursor was on, the folded one of the highlighted issue, or the first.
-            for header in (self.on_header, self.current.repository if self.current else None, self.groups[0].repository):
-                if header is not None and self.group_of(header):
+            for header in (self.on_header, self.current.repository if self.current else None, headers[0]):
+                if header in headers:
                     self.on_header = header
                     table.move_cursor(row=table.get_row_index(header))
                     break
@@ -646,13 +663,21 @@ class IdeApp(App):
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if event.data_table.id == "issues" and self.every and self.group_of(event.row_key.value):
-            self.fold(event.row_key.value)
+            if not self.running_only:
+                self.fold(event.row_key.value)
         elif event.data_table.id == "sessions" and event.row_key.value is not None:
             self.run_worker(self.focus_session(event.row_key.value), group="focus", exclusive=True)
         elif event.data_table.id == "run":
             steps = self.current.run.steps if self.current and self.current.run else []
             if 0 <= event.cursor_row < len(steps):
                 self.push_screen(StepDetail(steps[event.cursor_row], event.cursor_row + 1), self.go_to_step)
+
+    def action_toggle_running(self) -> None:
+        """Show only the issues with a run, or all again."""
+        self.running_only = not self.running_only
+        self.query_one("#issues-pane").border_title = "Issues · running" if self.running_only else "Issues"
+        self.render_issues()
+        self.show_issue(self.current_in())
 
     def fold(self, repository: str) -> None:
         """Fold the workspace of `repository`, or unfold it; an unfolded one is remembered as chosen recently."""

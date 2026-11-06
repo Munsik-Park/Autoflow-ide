@@ -1116,3 +1116,38 @@ async def test_starting_a_run_remembers_its_workspace(tmp_path):
         await pilot.press("s")
         await settle(app, pilot)
         assert json.loads(state.read_text()) == {"recent": ["autoflow-sandbox", "autoflow-coordinator"]}
+
+
+async def test_a_shows_only_the_issues_with_a_run_and_back():
+    app = every_app(runs=[SANDBOX_3, COORD_3], recent=[])
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/gone"))
+        await pilot.press("a")
+        await settle(app, pilot)
+        assert keys(issues) == ["Munsik-Park/autoflow-coordinator", "Munsik-Park/autoflow-coordinator#3",
+                                "Munsik-Park/autoflow-sandbox", "Munsik-Park/autoflow-sandbox#3"]
+        assert app.query_one("#issues-pane").border_title == "Issues · running"
+        assert app.current.number == 3          # the cursor's workspace row is gone: the first issue
+        issues.move_cursor(row=0)
+        await pilot.press("enter")               # no folding in this mode
+        await settle(app, pilot)
+        assert len(keys(issues)) == 4
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert len(keys(issues)) == 4
+        await pilot.press("a")
+        await settle(app, pilot)
+        assert app.query_one("#issues-pane").border_title == "Issues"
+        assert "Munsik-Park/gone" in keys(issues) and "Munsik-Park/autoflow-coordinator#67" in keys(issues)
+
+
+async def test_a_with_one_repository():
+    app = coordinated_app()
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.press("a")
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        assert [str(issues.get_row_at(i)[1]) for i in range(issues.row_count)] == ["3"]
