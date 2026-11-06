@@ -1330,3 +1330,40 @@ async def test_the_status_line_says_what_the_number_is():
         await pilot.press("number_sign", "2", "enter")
         await settle(app, pilot)
         assert "  |  #2 (closed PR)  |  " in status(app)
+
+
+# The coordinator's base and where it was set (#58)
+
+async def test_info_shows_the_base_and_where_it_was_set_read_again_with_the_issues():
+    from autoflow_ide.start import Setting, StartError
+
+    answers = [Setting("/nowhere/work/coordinator", "/nowhere/.autoflow/coordination.json"),
+               Setting("/nowhere/other-base", None),
+               Setting("/nowhere/fx/base", "/nowhere/coordination/coordination.local.json"),
+               StartError("no /c/tools/config.py")]
+    asked = []
+
+    async def base(coordinator):
+        asked.append(coordinator)
+        answer = answers[min(len(asked), len(answers)) - 1]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    def base_line(app):
+        return next(l for l in str(app.query_one("#info", Static).render()).splitlines() if l.startswith("base")).rstrip()
+
+    app = every_app(base_reader=base)
+    async with app.run_test(size=(124, 36)) as pilot:
+        await settle(app, pilot)
+        assert base_line(app) == "base      /nowhere/work/coordinator (global settings)"
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert base_line(app) == "base      /nowhere/other-base (built-in default)"
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert base_line(app) == "base      /nowhere/fx/base (local settings)"
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert base_line(app) == "base      no /c/tools/config.py"
+        assert asked == ["/c"] * 4

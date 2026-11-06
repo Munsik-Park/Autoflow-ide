@@ -18,8 +18,8 @@ from autoflow_ide.focus import FocusError, focus_surface
 from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repository_from_workspace, workspace_issues
 from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
-from autoflow_ide.start import (StartError, Workspace, coordinator_workspace, coordinator_workspace_entry,
-                               coordinator_workspaces, start_run)
+from autoflow_ide.start import (Setting, StartError, Workspace, coordinator_base, coordinator_workspace,
+                               coordinator_workspace_entry, coordinator_workspaces, setting_source, start_run)
 from autoflow_ide.state import chosen, read_recent, state_path, write_recent
 from autoflow_ide.tables import ColumnSpec, fill
 from autoflow_ide.version import ide_version
@@ -34,6 +34,8 @@ Starter = Callable[[str, str, int], Awaitable[str]]
 WorkspaceReader = Callable[[str, str], Awaitable[Workspace]]
 Placer = Callable[[], Awaitable[Dict[str, str]]]
 WorkspacesReader = Callable[[str], Awaitable[List[Workspace]]]
+# Reads the coordinator's base and where it was set, given the coordinator clone.
+BaseReader = Callable[[str], Awaitable[Setting]]
 # An issue by its repository (owner/name) and number: numbers alone repeat across repositories.
 IssueKey = Tuple[str, int]
 RUN_REFRESH_SEC = 5.0
@@ -120,7 +122,8 @@ class IdeApp(App):
                  window_check_sec: float = WINDOW_CHECK_SEC, window_idle_sec: float = WINDOW_IDLE_SEC,
                  workspace_reader: Optional[WorkspaceReader] = None, placer: Optional[Placer] = None,
                  version: Optional[str] = None, workspaces_reader: Optional[WorkspacesReader] = None,
-                 state_file: Optional[Path] = None, notice_sec: float = NOTICE_SEC):
+                 state_file: Optional[Path] = None, notice_sec: float = NOTICE_SEC,
+                 base_reader: Optional[BaseReader] = None):
         """With `issues`, show them as given. Otherwise load the open issues of `repository` with `loader`,
         again every `issue_refresh_sec` seconds; without `repository` but with `coordinator`, the most recent
         open issues of every workspace of the coordinator's base (`workspaces_reader`), under a row per workspace.
@@ -131,7 +134,8 @@ class IdeApp(App):
         `workspace_reader` reads that workspace's repo.json and `placer` where each tmux pane is, both shown
         above the run pane.
         `version`, the IDE's own (see version.py), is shown in the bottom-right corner.
-        `state_file` keeps the workspaces chosen recently, which open unfolded with those that have a run."""
+        `state_file` keeps the workspaces chosen recently, which open unfolded with those that have a run.
+        `base_reader` reads the coordinator's base and where it was set, again whenever the issues are read."""
         super().__init__()
         self.version = version
         self.static = issues is not None
@@ -149,6 +153,10 @@ class IdeApp(App):
         elif repository:
             self.groups.append(Group(repository))
         self.workspaces_reader = workspaces_reader or coordinator_workspaces
+        self.base_reader = base_reader or coordinator_base
+        # The coordinator's base as last read, or why it could not be.
+        self.base: Optional[Setting] = None
+        self.base_error: Optional[str] = None
         # The folded workspaces, by repository; the recently chosen ones, by workspace name, most recent first.
         self.folded: Set[str] = set()
         # Only the issues with a run, across workspaces and regardless of folding (`a`).
@@ -344,6 +352,8 @@ class IdeApp(App):
     def action_refresh_issues(self) -> None:
         if self.static:
             return
+        if self.coordinator:
+            self.run_worker(self.load_base(), group="base", exclusive=True)
         if self.every:
             self.set_message("issues", "loading issues")
             self.lookups = {k: i for k, i in self.lookups.items() if i is not None}
@@ -439,6 +449,16 @@ class IdeApp(App):
             self.places = await self.placer()
         except WindowError:
             return
+        try:
+            self.render_info()
+        except NoMatches:
+            pass  # the app is closing: its widgets are gone
+
+    async def load_base(self) -> None:
+        try:
+            self.base, self.base_error = await self.base_reader(self.coordinator), None
+        except StartError as e:
+            self.base, self.base_error = None, str(e)
         try:
             self.render_info()
         except NoMatches:
@@ -847,8 +867,9 @@ class IdeApp(App):
         run = self.current.run if self.current else None
         group = self.current_group()
         info = self.query_one("#info", Static)
-        lines = (info_lines(group.repository, group.workspace, group.workspace_error, run, self.places) if group
-                 else info_lines(None, None, None, run, self.places))
+        base = self.base or self.base_error
+        lines = (info_lines(group.repository, group.workspace, group.workspace_error, run, self.places, base) if group
+                 else info_lines(None, None, None, run, self.places, base))
         info.update(info_text(lines, info.content_size.width))
 
     def current_group(self) -> Optional[Group]:
@@ -899,11 +920,17 @@ INFO_LABEL_WIDTH = 10
 
 
 def info_lines(repository: Optional[str], workspace: Optional[Workspace], workspace_error: Optional[str],
-               run: Optional[Run], places: Dict[str, str]) -> List[Tuple[str, str]]:
-    """(label, value) lines for the info above the run pane. The workspace lines come from repo.json; the run
-    lines from status.py (its worktree and record folder from coordinator v0.7.0-rc6), the coordination session's
-    pane placed in tmux when it is found there."""
+               run: Optional[Run], places: Dict[str, str],
+               base: Union[Setting, str, None] = None) -> List[Tuple[str, str]]:
+    """(label, value) lines for the info above the run pane. The base comes from the coordinator's config.py (a
+    Setting, or why it could not be read); the workspace lines from repo.json; the run lines from status.py (its
+    worktree and record folder from coordinator v0.7.0-rc6), the coordination session's pane placed in tmux when
+    it is found there."""
     lines = [("repo", repository or "(no repository)")]
+    if isinstance(base, Setting):
+        lines.append(("base", f"{home_short(base.value)} ({setting_source(base.source)})"))
+    elif base:
+        lines.append(("base", base))
     if workspace:
         lines.append(("workspace", workspace.name))
         if workspace.clone:
@@ -932,7 +959,7 @@ def info_lines(repository: Optional[str], workspace: Optional[Workspace], worksp
 # Lines that are a path or a run name: cut in the middle when too long, so their start (where it is) and their end
 # (which run it is: the run's key, the run's folder name, the base branch) stay in view. The others are cut at
 # their end.
-CUT_MIDDLE = ("run", "clone", "worktree", "records")
+CUT_MIDDLE = ("run", "base", "clone", "worktree", "records")
 # The share of the room kept from a value's start when it is cut in the middle; the rest is its end.
 HEAD_SHARE = 0.4
 

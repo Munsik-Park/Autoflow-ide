@@ -32,6 +32,10 @@ Module run output recorded from AutoFlow v0.7.0 (commit cc5f047), in `records/au
 - `review-3/result.json`: written by `contract.sh check-out` after the run's `failure.md` and `tool-requests.json` (`[]`), exit status 3 (failed). No run in the operator's records had a `failure.md` (all 45 record folders listed on 2026-11-06), so this `failure.md` was written for the fixture, as the review contract's failure output describes it: what the run did and why it did not reach its goal.
 - `review-4/.check-in.json`: written by `contract.sh check-in`, exit status 0; the run has not checked out.
 
+Output recorded from autoflow-coordinator `tools/config.py`:
+
+- `config-default.txt`, `config-global.txt`, `config-local.txt`: stdout of the coordinator's `tools/config.py` without a key, at v0.7.0-rc9 (commit 9d26f82), exit status 0, run with `HOME=/home/claude/fxhome`: with no settings file; with `~/.autoflow/coordination.json` holding `{"base": "~/work/coordinator"}`; and with that file and `coordination.local.json` at the root of the clone (`/home/claude/autoflow-coordinator`) holding `{"base": "/home/claude/fx/base"}`. Each setting is `key<TAB>value<TAB>(source)`, then the places under the root without a source.
+
 Output recorded from tmux 3.4 (the operator's Mac has 3.2a):
 
 - `tmux-list-panes.txt`: stdout of `tmux list-panes -a -F '#{window_id} #{pane_id} #{window_name}'`, exit status 0, on a server with a window `ide`, an auto-named one, `autoflow-sandbox#4` split in two panes, `autoflow-sandbox#12`, `opensre#5`, `autoflow-sandbox#4b`, `my autoflow-sandbox#9`, and `autoflow-sandbox#7` in a second session. Windows were created with `new-window -n <name>`, which turns automatic-rename off for them (`show-options -w -v automatic-rename` gives `off`). In a format, tmux 3.4 prints a tab as `_`, so the fields are separated by spaces.

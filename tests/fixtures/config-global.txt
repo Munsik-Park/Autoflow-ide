@@ -1,0 +1,4 @@
+root	/home/claude/fxhome/.autoflow/coordination	(default)
+base	/home/claude/fxhome/work/coordinator	(/home/claude/fxhome/.autoflow/coordination.json)
+runs	/home/claude/fxhome/.autoflow/coordination/runs
+records	/home/claude/fxhome/.autoflow/coordination/records
