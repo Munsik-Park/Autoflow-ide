@@ -17,6 +17,7 @@ from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
 from autoflow_ide.start import StartError, Workspace, coordinator_workspace, coordinator_workspace_entry, start_run
 from autoflow_ide.tables import ColumnSpec, fill
+from autoflow_ide.version import ide_version
 from autoflow_ide.windows import TmuxWindows, WindowError, pane_places
 
 IssueLoader = Callable[[str], Awaitable[List[Issue]]]
@@ -63,7 +64,8 @@ class IdeApp(App):
                  starter: Optional[Starter] = None, issue_refresh_sec: float = ISSUE_REFRESH_SEC,
                  windows=None, workspace_finder: Optional[WorkspaceFinder] = None,
                  window_check_sec: float = WINDOW_CHECK_SEC, window_idle_sec: float = WINDOW_IDLE_SEC,
-                 workspace_reader: Optional[WorkspaceReader] = None, placer: Optional[Placer] = None):
+                 workspace_reader: Optional[WorkspaceReader] = None, placer: Optional[Placer] = None,
+                 version: Optional[str] = None):
         """With `issues`, show them as given. Otherwise load the open issues of `repository` with `loader`,
         again every `issue_refresh_sec` seconds.
         With `coordinator` (a coordinator clone), read its active runs every `run_refresh_sec` seconds.
@@ -71,8 +73,10 @@ class IdeApp(App):
         `starter` opens the coordination session for an issue (see start.py); `windows` finds and closes those
         sessions' windows (see windows.py) in the workspace `workspace_finder` names.
         `workspace_reader` reads that workspace's repo.json and `placer` where each tmux pane is, both shown
-        above the run pane."""
+        above the run pane.
+        `version`, the IDE's own (see version.py), is shown in the bottom-right corner."""
         super().__init__()
+        self.version = version
         self.open_issues: List[Issue] = list(issues) if issues is not None else []
         self.issues: List[Issue] = list(self.open_issues)
         self.static = issues is not None
@@ -129,6 +133,8 @@ class IdeApp(App):
                 yield DataTable(id="run", cursor_type="row")
             with Vertical(id="sessions-pane", classes="pane") as pane:
                 pane.border_title = "Sessions"
+                if self.version:
+                    pane.border_subtitle = f"ide {self.version}"
                 yield DataTable(id="sessions", cursor_type="row")
         yield Static(id="status")
         yield Footer()
@@ -613,7 +619,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--coordinator", metavar="DIR", help="the autoflow-coordinator clone whose runs to show")
     args = parser.parse_args(argv)
     if args.demo:
-        IdeApp(issues=placeholder_issues(), repository="(demo)").run()
+        IdeApp(issues=placeholder_issues(), repository="(demo)", version=ide_version()).run()
         return
     repository = args.repo
     if args.workspace:
@@ -621,7 +627,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             repository = repository_from_workspace(args.workspace)
         except IssueSourceError as e:
             parser.error(str(e))
-    IdeApp(repository=repository, coordinator=args.coordinator).run()
+    IdeApp(repository=repository, coordinator=args.coordinator, version=ide_version()).run()
 
 
 if __name__ == "__main__":
