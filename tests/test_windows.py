@@ -62,3 +62,18 @@ async def test_tmux_error_carries_its_message(tmp_path, monkeypatch):
     fake_tmux(tmp_path, monkeypatch, fail_with="can't find window: @99")
     with pytest.raises(WindowError, match="can't find window: @99"):
         await TmuxWindows().close(Window("@99", "autoflow-sandbox#4", ["%99"]))
+
+
+def test_places_of_the_panes():
+    from autoflow_ide.windows import parse_places
+    assert parse_places((FIXTURES / "tmux-places.txt").read_text()) == {
+        "%0": "1:0 ide", "%5": "1:1 tmux", "%1": "2:0 bash",
+        "%2": "2:1 autoflow-coordinator#59", "%3": "2:1 autoflow-coordinator#59",   # one window, two panes
+        "%4": "2:2 my window",                                                      # a name with a space
+    }
+
+
+async def test_no_places_outside_tmux(monkeypatch):
+    from autoflow_ide.windows import pane_places
+    monkeypatch.delenv("TMUX", raising=False)
+    assert await pane_places() == {}

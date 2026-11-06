@@ -20,7 +20,8 @@ class RunSourceError(Exception):
 
 
 def parse_status(text: str) -> List[Run]:
-    """Runs from the JSON of status.py: {"runs": [{"name", "issue", "branch", "steps", "sessions", "error"?}]}."""
+    """Runs from the JSON of status.py: {"runs": [{"name", "issue", "branch", "reference", "steps", "coordination",
+    "sessions", "error"?}]}, coordination being {"surface"} or null (from v0.7.0-rc3; absent before)."""
     try:
         runs = []
         for r in json.loads(text)["runs"]:
@@ -28,7 +29,9 @@ def parse_status(text: str) -> List[Run]:
                           s.get("entry"), s.get("cause"), s.get("session_state"), s.get("idle_sec"))
                      for s in r.get("steps", [])]
             sessions = [Session(s["name"], s["state"], s.get("surface")) for s in r.get("sessions", [])]
-            runs.append(Run(r["name"], steps, sessions, r.get("issue"), r.get("branch"), r.get("error")))
+            coordination = r.get("coordination") or {}
+            runs.append(Run(r["name"], steps, sessions, r.get("issue"), r.get("branch"), r.get("error"),
+                            r.get("reference"), coordination.get("surface")))
         return runs
     except (ValueError, TypeError, KeyError) as e:
         raise RunSourceError(f"unexpected status.py output: {e!r}") from e

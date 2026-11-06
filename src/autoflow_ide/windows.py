@@ -70,3 +70,25 @@ class TmuxWindows:
 
     async def close(self, window: Window) -> None:
         await tmux("kill-window", "-t", window.id)
+
+
+# Where a pane is, as the tmux status line names it: session:window-index, then the window's name. The pane id
+# goes first; the rest is shown as tmux prints it, so names with spaces need no splitting.
+PLACES_FORMAT = "#{pane_id} #{session_name}:#{window_index} #{window_name}"
+
+
+def parse_places(text: str) -> Dict[str, str]:
+    """Each pane's place ("2:1 autoflow-coordinator#59"), by pane id, from `tmux list-panes -a -F PLACES_FORMAT`."""
+    places: Dict[str, str] = {}
+    for line in text.splitlines():
+        pane, _, place = line.partition(" ")
+        if pane.startswith("%") and place:
+            places[pane] = place
+    return places
+
+
+async def pane_places() -> Dict[str, str]:
+    """The place of every pane of the tmux server the IDE runs in; none outside tmux."""
+    if not os.environ.get("TMUX"):
+        return {}
+    return parse_places(await tmux("list-panes", "-a", "-F", PLACES_FORMAT))

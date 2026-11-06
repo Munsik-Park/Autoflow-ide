@@ -11,8 +11,9 @@ import json
 import os
 import shlex
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 
 class StartError(Exception):
@@ -42,21 +43,39 @@ async def workspace_base(coordinator: str) -> Path:
     return Path((await run(sys.executable, str(script), "base")).strip())
 
 
-def find_workspace(base: Path, repository: str) -> str:
-    """The name of the workspace in `base` whose repo.json has `repository` as its github value."""
-    found: List[str] = []
+@dataclass
+class Workspace:
+    """A coordinator workspace, from its repo.json (the coordinator's WORKSPACE.md): `clone` is the repository's
+    clone and `base_branch` the branch runs start from; either is None when repo.json does not give it."""
+    name: str
+    github: str
+    clone: Optional[str] = None
+    base_branch: Optional[str] = None
+
+
+def find_workspace_entry(base: Path, repository: str) -> Workspace:
+    """The workspace in `base` whose repo.json has `repository` as its github value."""
+    found: List[Workspace] = []
     for repo_json in sorted(base.glob("*/repo.json")):
         try:
-            github = json.loads(repo_json.read_text()).get("github")
+            values = json.loads(repo_json.read_text())
+            github = values.get("github")
         except (OSError, ValueError, AttributeError):
             continue
         if github == repository:
-            found.append(repo_json.parent.name)
+            clone, branch = values.get("clone"), values.get("base_branch")
+            found.append(Workspace(repo_json.parent.name, github, clone if isinstance(clone, str) else None,
+                                   branch if isinstance(branch, str) else None))
     if not found:
         raise StartError(f"no workspace for {repository} in {base}")
     if len(found) > 1:
-        raise StartError(f"several workspaces for {repository} in {base}: {', '.join(found)}")
+        raise StartError(f"several workspaces for {repository} in {base}: {', '.join(w.name for w in found)}")
     return found[0]
+
+
+def find_workspace(base: Path, repository: str) -> str:
+    """The name of the workspace in `base` whose repo.json has `repository` as its github value."""
+    return find_workspace_entry(base, repository).name
 
 
 def instruction(workspace: str, issue: int) -> str:
@@ -86,6 +105,11 @@ async def open_coordination(coordinator: str, name: str, text: str) -> str:
 async def coordinator_workspace(coordinator: str, repository: str) -> str:
     """The name of the coordinator's workspace for `repository`."""
     return find_workspace(await workspace_base(coordinator), repository)
+
+
+async def coordinator_workspace_entry(coordinator: str, repository: str) -> Workspace:
+    """The coordinator's workspace for `repository`."""
+    return find_workspace_entry(await workspace_base(coordinator), repository)
 
 
 async def start_run(coordinator: str, repository: str, issue: int) -> str:

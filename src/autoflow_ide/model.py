@@ -42,6 +42,10 @@ class Run:
     issue: Optional[str] = None
     branch: Optional[str] = None
     error: Optional[str] = None
+    # the workflow the run follows, as its run record names it (review-only)
+    reference: Optional[str] = None
+    # the coordination session's surface (a tmux pane id), when run.env records it
+    coordination: Optional[str] = None
 
 
 @dataclass

@@ -4,8 +4,8 @@ import stat
 
 import pytest
 
-from autoflow_ide.start import (StartError, find_workspace, instruction, open_coordination, start_run,
-                                workspace_base)
+from autoflow_ide.start import (StartError, Workspace, find_workspace, find_workspace_entry, instruction,
+                                open_coordination, start_run, workspace_base)
 
 
 def fake_tmux(tmp_path, monkeypatch, fail_with=None):
@@ -55,6 +55,15 @@ def test_find_workspace(tmp_path):
     workspace(tmp_path, "sandbox-2", "Munsik-Park/autoflow-sandbox")
     with pytest.raises(StartError, match="several workspaces .*: autoflow-sandbox, sandbox-2"):
         find_workspace(tmp_path, "Munsik-Park/autoflow-sandbox")
+
+
+def test_find_workspace_entry_reads_repo_json(tmp_path):
+    workspace(tmp_path, "autoflow-sandbox", "Munsik-Park/autoflow-sandbox")
+    (tmp_path / "bare").mkdir()
+    (tmp_path / "bare" / "repo.json").write_text(json.dumps({"github": "owner/bare"}))
+    assert find_workspace_entry(tmp_path, "Munsik-Park/autoflow-sandbox") == Workspace(
+        "autoflow-sandbox", "Munsik-Park/autoflow-sandbox", "~/x", "main")
+    assert find_workspace_entry(tmp_path, "owner/bare") == Workspace("bare", "owner/bare", None, None)
 
 
 async def test_workspace_base_from_config_py(tmp_path):
