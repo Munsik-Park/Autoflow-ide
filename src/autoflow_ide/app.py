@@ -739,6 +739,9 @@ class IdeApp(App):
             except IssueSourceError as e:
                 self.set_message("find", f"{self.label(key)}: {e}")
                 return
+            if found.pull:
+                self.set_message("find", f"{self.label(key)} is a pull request")
+                return
             found.repository = repository
             group.extra = [found]
         self.set_message("find", f"{self.label(key)} is closed" if found.closed else "")

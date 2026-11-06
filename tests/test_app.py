@@ -1261,3 +1261,19 @@ async def test_hash_goes_to_exactly_that_number():
         await settle(app, pilot)
         assert app.current.number == 20 and asked == []
         assert app.query_one("#issues", DataTable).row_count == 3      # nothing added
+
+
+async def test_hash_on_a_pull_request_says_so_and_adds_nothing():
+    async def lookup(repository, number):
+        return Issue(number, "[fix · #28] A blank --tz", pull=True)
+
+    app = every_app(lookup=lookup)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        before = keys(issues)
+        issues.move_cursor(row=before.index("Munsik-Park/autoflow-sandbox#4"))
+        await pilot.press("number_sign", "2", "9", "enter")
+        await settle(app, pilot)
+        assert keys(issues) == before and app.current.number == 4
+        assert "autoflow-sandbox#29 is a pull request" in status(app)

@@ -8,6 +8,7 @@ Output recorded from gh 2.89.0 through the REST API:
 
 - `gh-issue-closed.json`: stdout of `gh api repos/Munsik-Park/autoflow-sandbox/issues/3 --jq '{number: .number, title: .title, state: .state}'`, exit status 0 (closed by the merge of PR #6).
 - `gh-issue-open.json`: the same for issue #4, open.
+- `gh-issue-pull.json`: recorded with gh 2.89.0, `gh api repos/Munsik-Park/opensre/issues/29 --jq '{number: .number, title: .title, state: .state, pull: (.pull_request != null)}'`, exit status 0: an open pull request, which this endpoint gives for its number like an issue. `gh-issue-not-pull.json`: the same for issue #3 of that repository, an open issue. The two files above were recorded before `pull` was asked for and have no such key.
 - issue not found (issue #999, exit status 1): stderr `gh: Not Found (HTTP 404)`; stdout carries the API's error JSON, not the `--jq` output.
 
 Messages recorded from gh 2.103.3, used in `tests/test_issues.py`:

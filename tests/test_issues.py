@@ -82,6 +82,8 @@ from autoflow_ide.issues import gh_issue, parse_issue
 
 CLOSED = (FIXTURES / "gh-issue-closed.json").read_text()
 OPEN = (FIXTURES / "gh-issue-open.json").read_text()
+PULL = (FIXTURES / "gh-issue-pull.json").read_text()
+NOT_PULL = (FIXTURES / "gh-issue-not-pull.json").read_text()
 
 
 def test_parse_recorded_issue():
@@ -89,6 +91,13 @@ def test_parse_recorded_issue():
     assert (closed.number, closed.state, closed.closed) == (3, "closed", True)
     assert closed.title == "word_count miscounts empty text, repeated spaces and newlines"
     assert (open_.number, open_.state, open_.closed) == (4, "open", False)
+    assert not closed.pull and not open_.pull     # recorded before `pull` was asked for: an issue
+
+
+def test_parse_recorded_pull_request():
+    pull, issue = parse_issue(PULL), parse_issue(NOT_PULL)
+    assert (pull.number, pull.state, pull.pull) == (29, "open", True)
+    assert (issue.number, issue.state, issue.pull) == (3, "open", False)
 
 
 @pytest.mark.parametrize("text", ["not json", "[]", '{"number": 3, "title": "no state"}'])
@@ -102,6 +111,7 @@ async def test_gh_issue_asks_the_rest_api(tmp_path, monkeypatch):
     issue = await gh_issue("Munsik-Park/autoflow-sandbox", 3)
     assert issue.closed
     assert args.read_text().split()[:3] == ["api", "repos/Munsik-Park/autoflow-sandbox/issues/3", "--jq"]
+    assert "pull: (.pull_request != null)" in args.read_text()
 
 
 async def test_gh_issue_not_found(tmp_path, monkeypatch):
