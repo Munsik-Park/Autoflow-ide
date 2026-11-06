@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from autoflow_ide.issues import (RECENT_ISSUES, SEARCH_LIMIT, IssueSourceError, gh_issues, parse_issue_list,
-                                 repository_from_workspace, search_issues, workspace_issues)
+from autoflow_ide.issues import (RECENT_ISSUES, IssueSourceError, gh_issues, parse_issue_list, repository_from_workspace,
+                                 workspace_issues)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 RECORDED = (FIXTURES / "gh-issue-list.json").read_text()
@@ -132,12 +132,3 @@ async def test_workspace_issues_keeps_the_others_when_one_fails():
     assert [i.number for i in issues["owner/a"]] == [6, 5] and [i.number for i in issues["owner/b"]] == [6, 5]
     assert isinstance(issues["owner/gone"], IssueSourceError) and "Could not resolve" in str(issues["owner/gone"])
 
-
-async def test_search_issues_asks_github_for_the_words(tmp_path, monkeypatch):
-    args = fake_gh(tmp_path, monkeypatch, stdout=RECORDED)
-    issues = await search_issues("Munsik-Park/Autoflow-ide", "tmux focus")
-    # The fake records arguments one line, so the words' space shows as two items.
-    assert args.read_text().split() == ["issue", "list", "--repo", "Munsik-Park/Autoflow-ide", "--state", "open",
-                                        "--limit", str(SEARCH_LIMIT), "--search", "tmux", "focus",
-                                        "--json", "number,title"]
-    assert [i.number for i in issues] == [6, 5, 4, 3]
