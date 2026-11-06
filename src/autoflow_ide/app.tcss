@@ -13,7 +13,7 @@
 }
 
 #issues-pane {
-    width: 40;
+    width: 30;
 }
 
 #run-pane {
@@ -21,7 +21,7 @@
 }
 
 #sessions-pane {
-    width: 30;
+    width: 28;
 }
 
 #status {
@@ -36,16 +36,37 @@ StepDetail {
 }
 
 #detail {
-    width: 72;
-    height: auto;
+    width: 90%;
+    max-width: 120;
+    height: 90%;
     border: round $accent;
     border-title-color: $accent;
     background: $surface;
-    padding: 1 2;
+    padding: 0 1;
+}
+
+#detail-body {
+    height: 1fr;
+}
+
+#detail-body > Markdown {
+    margin: 0;
+    padding: 0 1;
+}
+
+.detail-section {
+    margin-top: 1;
+    text-style: bold;
+    color: $accent;
+}
+
+.detail-note {
+    margin-top: 1;
+    color: $text-muted;
 }
 
 #detail-hint {
-    margin-top: 1;
+    height: 1;
     color: $text-muted;
 }
 

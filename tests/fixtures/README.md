@@ -22,6 +22,14 @@ Output recorded from autoflow-coordinator `tools/status.py` at v0.7.0-rc2 (commi
 - `status-error.json`: a run directory without run.env.
 - `status-coordination.json`: recorded at v0.7.0-rc4 (commit 9b2415d): a run directory named `autoflow-sandbox-3-coord` with run.env (`TERMINAL=tmux`, `ISSUE=3`, `BRANCH=issue-3-coord`, `COORD_SURFACE=%34`, `STATE=active`), no sessions.tsv, and a runbook.md with `- Reference: review-only: sample` and an empty progress table. Recorded with `tools/status.py <that directory>`.
 - `status-none.json`: no active runs.
+- `status-results.json`: recorded at v0.7.0-rc5 (commit 8f44586), which gives each step its `out` and `result`, with `tools/status.py /home/claude/fx/runs/autoflow-sandbox-6-results` (tmux 3.4). The run directory is `runs/autoflow-sandbox-6-results` here (run.env `TERMINAL=tmux`, `ISSUE=6`, `BRANCH=issue-6-results`, `STATE=active`, `RECORDS` the records folder below as it was at `/home/claude/fx/records/…`; three sessions whose processes are gone; a runbook.md with `- Reference: full` and seven rows). Its records folder is `records/autoflow-sandbox-6-results`, with seven invocations written in this order: `plan-1`, `build-1`, `review-1`, `build-2` (input `findings` from `review-1`), `review-2`, `review-3` and `review-4` (each `previous_findings` from `review-1`). The steps: `review-1` missed, `build-2` a return caused by it, a row outside AutoFlow (`CI check (gh)`), `review-2` with an empty verdict and a refused result, `review-3` failed, and `review-4` with no row and no result.json (running).
+
+Module run output recorded from AutoFlow v0.7.0 (commit cc5f047), in `records/autoflow-sandbox-6-results`:
+
+- `plan-1/{evaluation.json,result.json}`, `review-1/{review-findings.md,result.json}`, `build-1/result.json` and `build-2/result.json` (outputs and a tool request): copied unchanged from the operator's run of autoflow-sandbox #4 (`autoflow-sandbox-4-2026-11-05-220513-295dbab3`), so the paths in each result.json are where that run wrote them.
+- `review-2/result.json`: written by `scripts/contracts/contract.sh check-in` on an invocation whose `pr` is `8`, exit status 1 (refused at check-in).
+- `review-3/result.json`: written by `contract.sh check-out` after the run's `failure.md` and `tool-requests.json` (`[]`), exit status 3 (failed). No run in the operator's records had a `failure.md` (all 45 record folders listed on 2026-11-06), so this `failure.md` was written for the fixture, as the review contract's failure output describes it: what the run did and why it did not reach its goal.
+- `review-4/.check-in.json`: written by `contract.sh check-in`, exit status 0; the run has not checked out.
 
 Output recorded from tmux 3.4 (the operator's Mac has 3.2a):
 

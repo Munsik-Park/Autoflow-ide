@@ -25,6 +25,26 @@ def test_parse_recorded_run():
     assert (run.reference, run.coordination) == ("analysis-review", None)   # rc2 has no coordination
 
 
+def test_parse_recorded_results():
+    [run] = parse_status(fixture("status-results.json"))
+    records = "/home/claude/fx/records/autoflow-sandbox-6-results/"
+    assert [(s.shown, s.state, s.result, s.out) for s in run.steps] == [
+        ("plan-1", "pass", "accepted", records + "plan-1"),
+        ("build-1", "pass", "accepted", records + "build-1"),
+        ("review-1", "fail", "accepted", records + "review-1"),
+        ("↩ build-2 ← review-1", "pass", "accepted", records + "build-2"),
+        ("CI check (gh)", "pass", None, None),
+        ("↺ review-2 ← review-1", "awaiting", "refused", records + "review-2"),
+        ("↺ review-3 ← review-1", "fail", "failed", records + "review-3"),
+        ("↺ review-4 ← review-1", "running", None, records + "review-4"),
+    ]
+
+
+def test_before_rc5_a_step_has_no_out_or_result():
+    [run] = parse_status(fixture("status-cycle.json"))
+    assert {(s.out, s.result) for s in run.steps} == {(None, None)}
+
+
 def test_parse_recorded_coordination_surface():
     [run] = parse_status(fixture("status-coordination.json"))
     assert (run.reference, run.branch, run.coordination) == ("review-only", "issue-3-coord", "%34")

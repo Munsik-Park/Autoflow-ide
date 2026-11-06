@@ -1,0 +1,11 @@
+{
+  "contract": 1,
+  "module": "review",
+  "params": {
+    "issue": 6,
+    "pr": "Munsik-Park/autoflow-sandbox#8"
+  },
+  "inputs": {},
+  "out": "/home/claude/fx/records/autoflow-sandbox-6-results/review-1",
+  "records": "/home/claude/fx/records/autoflow-sandbox-6-results"
+}

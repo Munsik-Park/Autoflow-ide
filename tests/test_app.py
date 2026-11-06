@@ -296,7 +296,7 @@ async def test_a_run_whose_issue_closed_keeps_a_row_marked_closed():
         issues = app.query_one("#issues", DataTable)
         assert [str(issues.get_row_at(i)[1]) for i in range(2)] == ["3", "4"]
         assert str(issues.get_cell("3", "run")) == "●"
-        assert str(issues.get_cell("3", "title")).startswith("(closed) word_count")
+        assert str(issues.get_cell("3", "title")).startswith("(closed) word_")   # cut to the issues pane
         assert app.current.number == 3 and app.current.closed
         assert app.query_one("#run", DataTable).row_count == 3
         assert app.query_one("#sessions", DataTable).row_count == 2
@@ -323,7 +323,7 @@ async def test_an_issue_that_left_the_list_keeps_its_title_while_looked_up():
         assert not app.current.closed
         release.set()
         await settle(app, pilot)
-        assert str(issues.get_cell("3", "title")).startswith("(closed) word_count")
+        assert str(issues.get_cell("3", "title")).startswith("(closed) word_")   # cut to the issues pane
 
 
 async def test_a_failed_lookup_shows_on_the_status_line_and_is_retried_on_refresh():
@@ -447,27 +447,46 @@ async def test_s_without_a_coordinator():
 
 # The run pane's Enter: what happened in a step (#20)
 
-from autoflow_ide.detail import StepDetail, describe, entry_text
+from textual.widgets import Markdown
+
+from autoflow_ide.detail import StepDetail, describe
 from autoflow_ide.model import Step
 
-CYCLE = parse_status((Path(__file__).parent / "fixtures" / "status-cycle.json").read_text())
-
-
-def test_entry_text():
-    assert entry_text(Step("build-2", "pass", entry="return", cause="review-1", module="build")) == "return: sent back by review-1"
-    assert entry_text(Step("build-2", "pass", entry="return", module="build")).startswith("return: sent back by an input")
-    assert entry_text(Step("review-2", "pass", entry="rerun", cause="review-1", module="review")) == "rerun of review-1"
-    assert entry_text(Step("review-1", "fail", module="review")) == "first run"
-    assert entry_text(Step("CI check (gh)", "pass")) == "-"
+FIXTURES = Path(__file__).parent / "fixtures"
+CYCLE = parse_status((FIXTURES / "status-cycle.json").read_text())
+RECORDS = FIXTURES / "records" / "autoflow-sandbox-6-results"
 
 
 def test_describe_a_running_step():
     rows = dict(describe(Step("build-1", "running", session="S2", module="build", session_state="working",
-                              idle_sec=42.4), 2))
-    assert rows["Session"] == "S2 (working, idle 42s)" and rows["Verdict"] == "-" and rows["Step"] == "2  build-1"
+                              idle_sec=42.4, out="/r/build-1")))
+    assert rows["Session"] == "S2 (working, idle 42s)" and rows["Verdict"] == "-" and rows["Result"] == "-"
+    assert rows["Folder"] == "/r/build-1"
 
 
-async def test_enter_on_a_step_opens_it_and_c_goes_to_its_cause():
+def run_pane_names(app):
+    table = app.query_one("#run", DataTable)
+    return [str(table.get_row_at(n)[1]) for n in range(table.row_count)]
+
+
+def results_app(steps):
+    async def loader(repository):
+        return [Issue(6, "six")]
+
+    async def runs(coordinator):
+        return [Run("autoflow-sandbox-6-results", steps, issue="6")]
+
+    return IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c", run_loader=runs)
+
+
+def detail_text(app):
+    """The detail's text: its fields and section titles, the evaluation, and the source of each Markdown part."""
+    parts = [str(w.render()) for w in app.screen.query("#detail-body Static")]
+    parts += [w.source for w in app.screen.query("#detail-body Markdown")]
+    return "\n".join(parts)
+
+
+async def test_the_run_pane_marks_a_return_and_a_rerun_with_their_cause():
     async def loader(repository):
         return [Issue(5, "five")]
 
@@ -477,21 +496,88 @@ async def test_enter_on_a_step_opens_it_and_c_goes_to_its_cause():
     app = IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c", run_loader=runs)
     async with app.run_test(size=(140, 40)) as pilot:
         await settle(app, pilot)
-        await pilot.press("2", "down", "down", "down", "enter")      # step 4, build-2
+        assert run_pane_names(app) == ["analysis-1", "build-1", "review-1", "↩ build-2 ← review-1", "↺ review-2 ← review-1"]
+
+
+async def test_enter_on_a_step_opens_it_and_c_goes_to_its_cause():
+    steps = [Step("review-1", "fail", "goal missed", "S3", "review", out=str(RECORDS / "review-1"), result="accepted"),
+             Step("build-2", "pass", "pass", "S2", "build", "return", "review-1", out=str(RECORDS / "build-2"),
+                  result="accepted")]
+    app = results_app(steps)
+    async with app.run_test(size=(140, 40)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("2", "down", "enter")                       # build-2
         await pilot.pause()
         assert isinstance(app.screen, StepDetail)
-        body = str(app.screen.query_one("#detail-body").render())
-        assert "build-2" in body and "return: sent back by review-1" in body
+        assert app.screen.query_one("#detail").border_title == "Step 2  ↩ build-2 ← review-1"
+        text = detail_text(app)
+        assert "Result   accepted" in text and "Outputs" in text and "• commits.json" in text
+        assert "Lacked" in text and "A Windows environment" in text
         await pilot.press("c")
         await pilot.pause()
         assert not isinstance(app.screen, StepDetail)
-        assert app.query_one("#run", DataTable).cursor_row == 2           # review-1
+        assert app.query_one("#run", DataTable).cursor_row == 0           # review-1
         await pilot.press("enter")
         await pilot.pause()
-        assert "first run" in str(app.screen.query_one("#detail-body").render())
+        text = detail_text(app)
+        assert "Review findings (review-findings.md)" in text and "### F1 — Medium — holds" in text
+        assert "Outputs" not in text                                      # the findings are the result
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(app.screen, StepDetail)
+
+
+async def test_the_detail_shows_an_evaluation_a_refusal_and_a_failure():
+    steps = [Step("plan-1", "pass", "pass", "S1", "plan", out=str(RECORDS / "plan-1"), result="accepted"),
+             Step("review-2", "awaiting", "awaiting verdict", "S3", "review", "rerun", "review-1",
+                  out=str(RECORDS / "review-2"), result="refused"),
+             Step("review-3", "fail", "goal not met", "S3", "review", "rerun", "review-1",
+                  out=str(RECORDS / "review-3"), result="failed")]
+    app = results_app(steps)
+    async with app.run_test(size=(140, 40)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("2", "enter")
+        await pilot.pause()
+        text = detail_text(app)
+        assert "Scores" in text and "Decision grounds  9" in text and "Recommendations (7)" in text
+        assert "Low · Decision grounds · feature-design.md > Decisions > D4 (Holds under)" in text
+        await pilot.press("escape", "down", "enter")
+        await pilot.pause()
+        text = detail_text(app)
+        assert "Result   refused" in text and "Defects" in text and "param 'pr' does not match" in text
+        await pilot.press("escape", "down", "enter")
+        await pilot.pause()
+        text = detail_text(app)
+        assert "Result   failed" in text and "Why it did not reach its goal (failure.md)" in text
+        assert app.screen.query_one("#detail-body Markdown").source.startswith("# ")
+
+
+async def test_the_detail_of_a_step_with_no_result():
+    steps = [Step("CI check (gh)", "pass", "pass", "X1"),
+             Step("review-4", "running", None, None, "review", "rerun", "review-1", out=str(RECORDS / "review-4")),
+             Step("review-5", "running", None, None, "review", out="/no/such/review-5")]
+    app = results_app(steps)
+    async with app.run_test(size=(140, 40)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("2")
+        for row, expected in enumerate(("No module run", "No result yet", "not there yet")):
+            await pilot.press(*(["escape", "down"] if row else []), "enter")
+            await pilot.pause()
+            assert expected in detail_text(app)
+
+
+async def test_the_detail_scrolls():
+    steps = [Step("review-1", "fail", "goal missed", "S3", "review", out=str(RECORDS / "review-1"), result="accepted")]
+    app = results_app(steps)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("2", "enter")
+        await pilot.pause()
+        body = app.screen.query_one("#detail-body")
+        assert app.focused is body and body.max_scroll_y > 0
+        await pilot.press("pagedown")
+        await pilot.pause()
+        assert body.scroll_y > 0
 
 
 # Reading the open issues again (#22)

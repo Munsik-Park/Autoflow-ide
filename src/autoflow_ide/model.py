@@ -17,6 +17,11 @@ class Step:
     # the session's state and seconds since its last activity, on a running step only
     session_state: Optional[str] = None
     idle_sec: Optional[float] = None
+    # the module run's output folder, as its invocation names it; null for a step with no invocation
+    out: Optional[str] = None
+    # the status in that folder's result.json (accepted, refused or failed); null until it is written or
+    # when it cannot be read
+    result: Optional[str] = None
 
     @property
     def name(self) -> str:
@@ -25,6 +30,16 @@ class Step:
         if self.module and not self.label.startswith(self.module):
             return f"{self.module} {self.label}"
         return self.label
+
+    @property
+    def shown(self) -> str:
+        """The name as the run pane shows it: marked ↩ for a return and ↺ for a rerun, with the run that
+        caused it (↩ design-2 ← review-1), as the coordinator's run-status pane shows a step."""
+        mark = ENTRY_MARK.get(self.entry or "", "")
+        return f"{mark}{self.name}" + (f" ← {self.cause}" if self.cause else "")
+
+
+ENTRY_MARK = {"return": "↩ ", "rerun": "↺ "}
 
 
 @dataclass

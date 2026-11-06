@@ -1,0 +1,12 @@
+{
+  "contract": 1,
+  "module": "build",
+  "params": {
+    "issue": 6
+  },
+  "inputs": {
+    "findings": "/home/claude/fx/records/autoflow-sandbox-6-results/review-1/review-findings.md"
+  },
+  "out": "/home/claude/fx/records/autoflow-sandbox-6-results/build-2",
+  "records": "/home/claude/fx/records/autoflow-sandbox-6-results"
+}

@@ -1,7 +1,6 @@
 """The IDE screen: issues, the selected issue's run, and its sessions."""
 import argparse
 import time
-from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
 from textual.app import App, ComposeResult
@@ -10,7 +9,7 @@ from textual.css.query import NoMatches
 from rich.text import Text
 from textual.widgets import DataTable, Footer, Static
 
-from autoflow_ide.detail import StepDetail
+from autoflow_ide.detail import StepDetail, home_short
 from autoflow_ide.focus import FocusError, focus_surface
 from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repository_from_workspace
 from autoflow_ide.model import Issue, Run, placeholder_issues
@@ -485,7 +484,7 @@ class IdeApp(App):
         self.query_one("#run-pane").border_title = f"Run: {run.name}" if run else "Run"
         steps = run.steps if run else []
         fill(run_table, RUN_COLUMNS,
-             ((None, [str(n), s.name, s.session or "", s.state, s.verdict or ""]) for n, s in enumerate(steps, 1)))
+             ((None, [str(n), s.shown, s.session or "", s.state, s.verdict or ""]) for n, s in enumerate(steps, 1)))
         fill(sessions, SESSION_COLUMNS,
              ((s.name, [s.name, s.state]) for s in (run.sessions if run else [])))
         if run_table.row_count:
@@ -559,15 +558,6 @@ def info_text(lines: List[Tuple[str, str]]) -> Text:
         text.append(label.ljust(INFO_LABEL_WIDTH), style="dim")
         text.append(value)
     return text
-
-
-def home_short(path: str) -> str:
-    """`path` with the home folder written as ~, as the operator types it."""
-    full = Path(path).expanduser()
-    try:
-        return "~/" + str(full.relative_to(Path.home()))
-    except ValueError:
-        return str(full)
 
 
 def issue_title(issue: Issue) -> str:

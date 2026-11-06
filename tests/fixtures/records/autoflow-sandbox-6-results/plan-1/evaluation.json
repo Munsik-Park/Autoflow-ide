@@ -1,0 +1,67 @@
+{
+  "type": "plan_evaluation",
+  "issue": "#4",
+  "scores": {
+    "Decision grounds": {
+      "score": 9,
+      "reason": "I re-derived every anchor the design cites at 0702976. textstats/__main__.py:4 is the import line, :9-11 the usage-error path and :14-16 the three print lines. tests/test_textstats.py:7 is the import, :26-38 is test_cli_words and :38 uses assertIn on splitlines(). README.md:5 is the description sentence and :13 says 'Python 3.9 or later, standard library only'. .github/workflows/test.yml:15-16 is 3.12 running 'python -m unittest -v'. textstats/__init__.py:6 and :16 both use text.split(). git show 9cfc414 shows split(\" \") changed to split(). The issue body (gh issue view 4) matches the literals the design recovered: the trailing space of `top words: ` and the ten characters. I re-ran the design's reference sketch (plan-1/local/check.log) and it confirms the rejected alternatives fail as the design says: most_common gives [('c', 1), ('b', 1)] on 'c b a'; an unguarded [:-1] returns a non-empty list (design probe.log); a same-quote f-string is a SyntaxError on 3.9.6. PEP 585 list[tuple[str, int]] evaluates at def time on 3.9.6 (check.log). Every decision D1-D7 states its constraints and its rejected alternatives with grounds. FAIL cases I searched: (a) 'alphabetically' read as code-point order, which sorts 'éclair' after 'zebra' (check.log). Refuted: D3 states this reading and rejects locale collation on a stated ground (the order would depend on LC_COLLATE). (b) strip and lower not commuting. Refuted: all ten characters are caseless ASCII. (c) A survivor, Low: D4's constraints do not mention the stdout encoding. The CLI used to print only ASCII; it now prints words taken from the file. Under a Latin-1 locale, Python 3.9.6 raises UnicodeEncodeError and exits 1 when writing a non-Latin-1 word to piped stdout (plan-1/local/encoding.log). No criterion asks for this to be handled, so it costs a point rather than more. ADR-conformance check: N/A. The target tree (git ls-files) has no ADR directory, and no trigger area is hit, because D6/S2 reject the only CI change considered."
+    },
+    "Verification fit": {
+      "score": 9,
+      "reason": "All nine applied criteria are disposed of by id, plus C1 (D4) and C2 (D6). Each row's method can fail when its property does not hold, and I checked each oracle value against the issue literals and probe.log. word-definition compares (word, count) sets with order ignored, so it is independent of tie-order. Its required inputs cover both edges (`(\"x\"),`), interior punctuation, tokens made only of strippable characters, and tab/newline/repeated-space separators. tie-order uses 'c b a' with n=2, which rejects first-occurrence order, reverse order and cut-before-sort. n-bounds uses a negative n with two or more distinct words, the input that defeats an unguarded slice. return-shape-example uses exact equality, which rejects a list of lists, a dict or an iterator. The CLI row matches whole lines in splitlines(), which keeps the trailing space. Its no-words input `... \"\" ()` gives word_count 3, so a CLI that decides 'no words' from word_count fails. The test-per-rule mutation check verifies the claim about the tests, which the test-first red run cannot. I confirmed that red run gives one module-import error (plan-1/local/red-import.log). C1 and C2 each catch a failure no existing mechanism catches: nothing checks line order, and nothing runs 3.9. The shared-state clause is N/A, since the function is pure and the CLI only reads one file. FAIL cases that survive, all Low: the mutation set has no tokenisation variant; the rule map R1-R4b leaves out the return-shape rule; the 'every new test fails with the same ImportError' sentence is imprecise; C2's cost-of-absence range is overstated. None of these breaks an oracle."
+    },
+    "Scope": {
+      "score": 9,
+      "reason": "Scope includes the nine applied criteria and nothing more. The design adds no helper and no option, the CLI count is the constant 3, and the README change is one sentence. The three judged problems are answered under Change Surface Rules > Scope judgment. S1, the different word definitions (anchors textstats/__init__.py:6 and :16, re-read): Q1 is directly related, because the change exposes the difference. Q2 is answered by its first half: the fix needs a design decision of its own and would reopen 9cfc414. The PR will state it as a known difference. S2, CI testing only 3.12 against README.md:13: judged not directly related, because the gap predates the change and the change neither creates nor exposes it. It is reported in one line with its path:line. S3, non-integer n: left out under the over-engineering guard. I also checked the symmetric over-engineering clause on the verification design. The mutation check, C1 and C2 each catch a defect no other row or named existing mechanism catches, so none is redundant. The mutation check is the heaviest, but it answers the explicit 'a test per rule' criterion and runs once outside the tree. FAIL search for a missed related problem: textstats/__main__.py:1's docstring and README's usage block stay accurate. No survivor. ADR-conformance: N/A (no ADRs, no trigger area)."
+    },
+    "Security": {
+      "score": 9,
+      "reason": "Confirmed against the code. The CLI's input path is unchanged (textstats/__main__.py:12-13 reads the one file it is given). The only new dependency is collections, from the standard library. top_words is pure. Memory grows with the number of distinct words, which is bounded by what f.read() already holds. Path handling and the usage-error path are unchanged. FAIL case that survives, Low: the security section says there is no new I/O, but the change is the first time this CLI writes text taken from the file to the terminal. A token holding terminal control sequences (ESC ] ... BEL) passes through split/strip unchanged (plan-1/local/check.log). If it is among the top 3 words, it is printed raw. cat and uniq -c behave the same way, so no mitigation is clearly owed, but the design does not state the exposure."
+    }
+  },
+  "summary": "GATE:PLAN, issue #4, first evaluation; nothing is inherited. Size: a small, local change: one pure function in textstats/__init__.py, one appended print in textstats/__main__.py, one README sentence and tests added to the existing test module. It touches no shared state, gate or ADR, and the CLI output gains one line at the end. So I did a lightweight pass. I traced every cited anchor, re-ran the design's sketch under 3.9.6 and 3.15.2, and ran three checks of my own (plan-1/local/check.log, encoding.log, red-import.log). Scores: Decision grounds 9, Verification fit 9, Scope 9, Security 9; average 9.0. Every decision is grounded in the real code at 0702976, and every rejected alternative is shown failing by a probe. Every applied criterion has an oracle that can fail on its own defect. The scope judgments S1-S3 answer both questions. ADR conformance is N/A. Seven findings: six Low, about gaps the design does not state and imprecise sentences in the verification design, and one Low recording that the applied text of cli-top-words-line has lost the issue's inline-code quoting (the design's reading agrees with the issue body). None of them breaks a decision or an oracle.",
+  "recommendations": [
+    {
+      "subject": "feature-design.md > Decisions > D4 (Holds under)",
+      "item": "Decision grounds",
+      "severity": "Low",
+      "finding": "D4 does not mention the stdout encoding. Before this change the CLI printed only ASCII labels and numbers; it now prints words taken from the input file. If stdout's encoding cannot represent a top-3 word, print raises UnicodeEncodeError and the CLI exits 1 with a traceback. Reproduced: LC_ALL=en_US.ISO8859-1 /usr/bin/python3 (3.9.6) writing a Hangul word to piped stdout gives \"UnicodeEncodeError: 'latin-1' codec can't encode characters\", exit 1 (plan-1/local/encoding.log). On Windows, Python 3.9-3.14 uses the locale encoding for redirected stdout, so the same failure should occur there; I did not reproduce that. No criterion requires handling this. Whether to accept it or use an error handler is the design's decision, and it should be stated."
+    },
+    {
+      "subject": "verification-design.md > test-per-rule > (2) Mutation check, minimum variant set",
+      "item": "Verification fit",
+      "severity": "Low",
+      "finding": "The minimum variant set has no variant for R1's first clause, 'a run of non-whitespace characters' (for example text.split(\" \") or a \\w+ regex). The R1a and R1b variants change only stripping and empty-token handling. So a word-definition test that leaves out the tab, newline and repeated-space separators would still pass the mutation check. The word-definition oracle row does require those separators, so the oracle is sound. The gap is that the mutation check does not confirm the test actually covers this clause."
+    },
+    {
+      "subject": "verification-design.md > test-per-rule (rule list R1-R4b)",
+      "item": "Verification fit",
+      "severity": "Low",
+      "finding": "The rule map uses only the issue's four 'Rules' bullets. The applied criterion test-per-rule says 'top_words follows every rule above', and in the applied list return-shape-example comes before it ('a list of (word, count) tuples, most frequent first'). That rule is missing from the map and has no mutation variant. Its committed exact-equality test already covers it, so the fix is only to list it in the build report's map."
+    },
+    {
+      "subject": "verification-design.md > test-per-rule > Catches ('at the base every new test fails with the same ImportError')",
+      "item": "Verification fit",
+      "severity": "Low",
+      "finding": "This sentence is imprecise. With the module-level import the existing module uses (tests/test_textstats.py:7) extended to top_words, unittest reports a single unittest.loader._FailedTest for tests.test_textstats. None of the tests run, new or existing: 'Ran 1 test', 'FAILED (errors=1)', exit 1 (plan-1/local/red-import.log, a copy of 0702976 with only line 7 changed). The conclusion still holds: the red run cannot tell the rules apart. But the build's test-first record should expect one module-import error, not a failure per test."
+    },
+    {
+      "subject": "verification-design.md > C2 > Necessity ('import textstats fails on 3.9-3.11 for every function')",
+      "item": "Verification fit",
+      "severity": "Low",
+      "finding": "The cost of absence is overstated by construct. A same-quote f-string at D4's site, textstats/__main__.py, breaks only the CLI on 3.9-3.11, not import textstats. An evaluated PEP 604 annotation in textstats/__init__.py breaks import on 3.9 only, because 3.10 accepts it. Only a 3.12-only syntax error in __init__.py breaks every function on 3.9-3.11. C2 is still needed in every case, because nothing else runs 3.9."
+    },
+    {
+      "subject": "feature-design.md > ADR conformance, shared state, security > Security",
+      "item": "Security",
+      "severity": "Low",
+      "finding": "'No new I/O' leaves out that the CLI now echoes file-derived tokens to the terminal for the first time. A token with terminal control sequences (for example ESC ] 0 ; x BEL) passes through split() and strip() unchanged (plan-1/local/check.log). If it is among the top 3, the top words line prints it raw. cat and uniq -c behave the same way, and printable words, including the criterion's literals, are unaffected by any escaping, so no mitigation is clearly owed. The design should state the exposure and its decision on it."
+    },
+    {
+      "subject": "cli-top-words-line",
+      "item": "Verification fit",
+      "severity": "Low",
+      "finding": "As a matter of fact, the applied text of this criterion has lost the issue body's inline-code delimiters. The literal `top words: the (3), cat (2), dog (1)` is not set off from the words around it. The trailing space of `top words: ` survives only as the double space in 'top words:  with nothing after it'. The same loss affects the character set in word-definition and `n <= 0` in n-bounds, but those stay unambiguous. The design read the literals from the issue body (gh issue view 4), and its reading, a trailing space kept on the no-words line, agrees with the applied text. Later modules that read only applied-criteria.json have to infer the trailing space. This lowers no score."
+    }
+  ]
+}

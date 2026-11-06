@@ -1,0 +1,15 @@
+{
+  "contract": 1,
+  "module": "build",
+  "status": "accepted",
+  "outputs": {
+    "commits": "/Users/boggle70/.autoflow/coordination/records/autoflow-sandbox-4-2026-11-05-220513-295dbab3/build-1/commits.json",
+    "report": "/Users/boggle70/.autoflow/coordination/records/autoflow-sandbox-4-2026-11-05-220513-295dbab3/build-1/build-report.md"
+  },
+  "defects": [],
+  "tool_requests": [],
+  "autoflow": {
+    "version": "0.7.0",
+    "root": "/Users/boggle70/.claude/plugins/cache/autoflow/autoflow/0.7.0"
+  }
+}
