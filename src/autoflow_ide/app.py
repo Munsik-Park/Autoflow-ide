@@ -484,7 +484,6 @@ class IdeApp(App):
         sessions = self.query_one("#sessions", DataTable)
         run_row, session_row = run_table.cursor_row, sessions.cursor_row
         run = issue.run if issue else None
-        self.query_one("#run-pane").border_title = f"Run: {run.name}" if run else "Run"
         steps = run.steps if run else []
         fill(run_table, RUN_COLUMNS,
              ((None, [str(n), s.shown, s.session or "", s.state, s.verdict or ""]) for n, s in enumerate(steps, 1)))
@@ -559,9 +558,12 @@ def info_lines(repository: Optional[str], workspace: Optional[Workspace], worksp
     return lines
 
 
-# Lines whose end tells one run or place from another (a run's key, the run's folder name, the base branch): cut
-# at their start when too long. The others are cut at their end.
-KEEP_END = ("run", "clone", "worktree", "records")
+# Lines that are a path or a run name: cut in the middle when too long, so their start (where it is) and their end
+# (which run it is: the run's key, the run's folder name, the base branch) stay in view. The others are cut at
+# their end.
+CUT_MIDDLE = ("run", "clone", "worktree", "records")
+# The share of the room kept from a value's start when it is cut in the middle; the rest is its end.
+HEAD_SHARE = 0.4
 
 
 def info_text(lines: List[Tuple[str, str]], width: int = 0) -> Text:
@@ -572,23 +574,30 @@ def info_text(lines: List[Tuple[str, str]], width: int = 0) -> Text:
         if n:
             text.append("\n")
         text.append(label.ljust(INFO_LABEL_WIDTH), style="dim")
-        text.append(keep_end(value, room) if label in KEEP_END and width > 0 else value)
+        text.append(cut_middle(value, room) if label in CUT_MIDDLE and width > 0 else value)
     return text
 
 
-def keep_end(value: str, room: int) -> str:
-    """`value` cut at its start to `room` cells, an ellipsis in front, when it is longer."""
+def cut_middle(value: str, room: int) -> str:
+    """`value` cut to `room` cells, an ellipsis in place of its middle, when it is longer."""
     if cell_len(value) <= room:
         return value
     if room < 2:
         return "…"[:max(room, 0)]
-    kept, used = [], 1
-    for char in reversed(value):
+    head = take(value, int((room - 1) * HEAD_SHARE))
+    tail = take(value[::-1], room - 1 - cell_len(head))[::-1]
+    return head + "…" + tail
+
+
+def take(value: str, cells: int) -> str:
+    """The longest start of `value` that fits in `cells` cells."""
+    used, end = 0, 0
+    for char in value:
         used += cell_len(char)
-        if used > room:
+        if used > cells:
             break
-        kept.append(char)
-    return "…" + "".join(reversed(kept))
+        end += 1
+    return value[:end]
 
 
 def issue_title(issue: Issue) -> str:
