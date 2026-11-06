@@ -13,7 +13,7 @@ import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 class StartError(Exception):
@@ -41,6 +41,51 @@ async def workspace_base(coordinator: str) -> Path:
     if not script.is_file():
         raise StartError(f"no {script}")
     return Path((await run(sys.executable, str(script), "base")).strip())
+
+
+@dataclass
+class Setting:
+    """A coordinator setting as its tools/config.py prints it: the value, and the settings file that set it, or
+    None for the coordinator's built-in default."""
+    value: str
+    source: Optional[str]
+
+
+def parse_config(text: str) -> Dict[str, Setting]:
+    """The settings in the output of the coordinator's tools/config.py run without a key: a line per setting,
+    `key<TAB>value<TAB>(source)`, the source a file path or `default`. The places under the root that follow
+    (`key<TAB>path`, no source) are not settings and are left out."""
+    found: Dict[str, Setting] = {}
+    for line in text.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 3 or not (fields[2].startswith("(") and fields[2].endswith(")")):
+            continue
+        source = fields[2][1:-1]
+        found[fields[0]] = Setting(fields[1], None if source == "default" else source)
+    return found
+
+
+# The coordinator's settings files, by name (its SETTINGS.md): one at the root of the clone, one in ~/.autoflow.
+SETTINGS_FILES = {"coordination.local.json": "local settings", "coordination.json": "global settings"}
+
+
+def setting_source(source: Optional[str]) -> str:
+    """Where a coordinator setting was set, as the operator reads it: which settings file, or the built-in default;
+    the file's path when its name is not one of the coordinator's."""
+    if source is None:
+        return "built-in default"
+    return SETTINGS_FILES.get(Path(source).name, source)
+
+
+async def coordinator_base(coordinator: str) -> Setting:
+    """The coordinator's base and where it was set, from its tools/config.py."""
+    script = Path(coordinator).expanduser() / "tools" / "config.py"
+    if not script.is_file():
+        raise StartError(f"no {script}")
+    settings = parse_config(await run(sys.executable, str(script)))
+    if "base" not in settings:
+        raise StartError(f"{script} printed no base")
+    return settings["base"]
 
 
 @dataclass

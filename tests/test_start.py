@@ -4,8 +4,11 @@ import stat
 
 import pytest
 
-from autoflow_ide.start import (StartError, Workspace, coordinator_workspaces, find_workspace, find_workspace_entry,
-                                instruction, list_workspaces, open_coordination, start_run, workspace_base)
+from autoflow_ide.start import (Setting, StartError, Workspace, coordinator_base, coordinator_workspaces,
+                                find_workspace, find_workspace_entry, instruction, list_workspaces, open_coordination,
+                                parse_config, setting_source, start_run, workspace_base)
+
+FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
 
 
 def fake_tmux(tmp_path, monkeypatch, fail_with=None):
@@ -133,3 +136,36 @@ async def test_start_run(tmp_path, monkeypatch):
     calls = log.read_text().splitlines()
     assert calls[0] == f"new-window -c {clone} -n autoflow-sandbox#4 -P -F #{{pane_id}}"
     assert calls[1].endswith("claude 'Workspace autoflow-sandbox, issue #4.'")
+
+
+def test_config_settings_and_where_each_was_set():
+    """config.py without a key (coordinator v0.7.0-rc9): each setting with the file that set it, or the default."""
+    home = "/home/claude/fxhome"
+    assert parse_config((FIXTURES / "config-default.txt").read_text()) == {
+        "root": Setting(f"{home}/.autoflow/coordination", None),
+        "base": Setting(f"{home}/work/coordinator", None)}
+    assert parse_config((FIXTURES / "config-global.txt").read_text())["base"] == Setting(
+        f"{home}/work/coordinator", f"{home}/.autoflow/coordination.json")
+    assert parse_config((FIXTURES / "config-local.txt").read_text())["base"] == Setting(
+        "/home/claude/fx/base", "/home/claude/autoflow-coordinator/coordination.local.json")
+
+
+def test_where_a_setting_was_set_by_the_coordinator_settings_file_names():
+    sources = [parse_config((FIXTURES / f"config-{kind}.txt").read_text())["base"].source
+               for kind in ("default", "global", "local")]
+    assert [setting_source(s) for s in sources] == ["built-in default", "global settings", "local settings"]
+    assert setting_source("/elsewhere/settings.json") == "/elsewhere/settings.json"
+
+
+async def test_coordinator_base_from_config_py(tmp_path):
+    tools = tmp_path / "clone" / "tools"
+    tools.mkdir(parents=True)
+    recorded = (FIXTURES / "config-global.txt").read_text()
+    (tools / "config.py").write_text(f"import sys\nsys.stdout.write({recorded!r}) if not sys.argv[1:] else sys.exit(1)\n")
+    assert await coordinator_base(str(tmp_path / "clone")) == Setting(
+        "/home/claude/fxhome/work/coordinator", "/home/claude/fxhome/.autoflow/coordination.json")
+    (tools / "config.py").write_text("print('runs\\t/x')\n")
+    with pytest.raises(StartError, match="printed no base"):
+        await coordinator_base(str(tmp_path / "clone"))
+    with pytest.raises(StartError, match="no .*config.py"):
+        await coordinator_base(str(tmp_path / "nowhere"))
