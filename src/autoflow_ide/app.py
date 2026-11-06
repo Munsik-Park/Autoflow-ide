@@ -2,7 +2,8 @@
 import argparse
 import time
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Dict, List, Optional, Tuple, Union
+from pathlib import Path
+from typing import Awaitable, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -18,6 +19,7 @@ from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
 from autoflow_ide.start import (StartError, Workspace, coordinator_workspace, coordinator_workspace_entry,
                                coordinator_workspaces, start_run)
+from autoflow_ide.state import chosen, read_recent, state_path, write_recent
 from autoflow_ide.tables import ColumnSpec, fill
 from autoflow_ide.version import ide_version
 from autoflow_ide.windows import TmuxWindows, Window, WindowError, pane_places
@@ -47,7 +49,8 @@ RUN_MARK = "●"
 ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("#", "number", 4), ("Title", "title", None)]
 # For every workspace, the number goes with the title, so a workspace's name has the room of both.
 EVERY_ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("Issue", "title", None)]
-WORKSPACE_MARK = "▾"
+UNFOLDED_MARK = "▾"
+FOLDED_MARK = "▸"
 RUN_COLUMNS: List[ColumnSpec] = [("Step", "step", 4), ("Module run", "name", None), ("Session", "session", 7),
                                  ("State", "state", 8), ("Verdict", "verdict", 16)]
 SESSION_COLUMNS: List[ColumnSpec] = [("Session", "name", 7), ("State", "state", None)]
@@ -77,9 +80,11 @@ class Group:
         return self.workspace.name if self.workspace else self.repository
 
 
-def group_title(group: Group) -> str:
-    """The row of a workspace in the issues pane."""
-    return f"{group.name}: {group.error}" if group.error else group.name
+def group_title(group: Group, folded: bool) -> str:
+    """The row of a workspace in the issues pane: folded, with the number of its rows."""
+    if group.error:
+        return f"{group.name}: {group.error}"
+    return f"{group.name}  ({len(group.issues)})" if folded else group.name
 
 
 class IdeApp(App):
@@ -102,7 +107,8 @@ class IdeApp(App):
                  windows=None, workspace_finder: Optional[WorkspaceFinder] = None,
                  window_check_sec: float = WINDOW_CHECK_SEC, window_idle_sec: float = WINDOW_IDLE_SEC,
                  workspace_reader: Optional[WorkspaceReader] = None, placer: Optional[Placer] = None,
-                 version: Optional[str] = None, workspaces_reader: Optional[WorkspacesReader] = None):
+                 version: Optional[str] = None, workspaces_reader: Optional[WorkspacesReader] = None,
+                 state_file: Optional[Path] = None):
         """With `issues`, show them as given. Otherwise load the open issues of `repository` with `loader`,
         again every `issue_refresh_sec` seconds; without `repository` but with `coordinator`, the most recent
         open issues of every workspace of the coordinator's base (`workspaces_reader`), under a row per workspace.
@@ -112,7 +118,8 @@ class IdeApp(App):
         sessions' windows (see windows.py) in the workspace `workspace_finder` names, or in every workspace.
         `workspace_reader` reads that workspace's repo.json and `placer` where each tmux pane is, both shown
         above the run pane.
-        `version`, the IDE's own (see version.py), is shown in the bottom-right corner."""
+        `version`, the IDE's own (see version.py), is shown in the bottom-right corner.
+        `state_file` keeps the workspaces chosen recently, which open unfolded with those that have a run."""
         super().__init__()
         self.version = version
         self.static = issues is not None
@@ -130,6 +137,10 @@ class IdeApp(App):
         elif repository:
             self.groups.append(Group(repository))
         self.workspaces_reader = workspaces_reader or coordinator_workspaces
+        # The folded workspaces, by repository; the recently chosen ones, by workspace name, most recent first.
+        self.folded: Set[str] = set()
+        self.state_file = state_file
+        self.recent: List[str] = read_recent(state_file) if state_file else []
         self.lookup = lookup or gh_issue
         # Issues missing from the open list, by (repository, number): the looked-up issue, or None while looking
         # or after a failure (looked up again on the next refresh of the issues).
@@ -204,7 +215,7 @@ class IdeApp(App):
 
     def render_all(self) -> None:
         self.render_issues()
-        self.show_issue(self.current)
+        self.show_issue(self.current_in())
 
     # Issues, in groups by repository
 
@@ -252,19 +263,29 @@ class IdeApp(App):
             return None
         key = issue_key(self.current) if self.current else None
         ordered = self.ordered()
-        return next((i for i in ordered if issue_key(i) == key), ordered[0] if ordered else None)
+        found = next((i for i in ordered if issue_key(i) == key), None)
+        if found is None and self.current is not None and self.current.repository in self.folded:
+            return None  # its workspace was folded: the cursor goes to the workspace's row
+        return found or (ordered[0] if ordered else None)
+
+    def shown(self, group: Group) -> List[Issue]:
+        """The rows of `group` under its own: none when folded, those with a run first."""
+        return [] if group.repository in self.folded else sorted(group.issues, key=lambda i: i.run is None)
 
     def ordered(self) -> List[Issue]:
-        """Issues in their groups, those with a run first in each, each part in the order the source gave."""
-        return [i for g in self.groups for i in sorted(g.issues, key=lambda i: i.run is None)]
+        """The issues shown, in their groups, those with a run first in each, each part in the order the source
+        gave."""
+        return [i for g in self.groups for i in self.shown(g)]
 
     def render_issues(self) -> None:
         table = self.query_one("#issues", DataTable)
         rows: List[Tuple[Optional[str], List[Union[str, Text]]]] = []
         for group in self.groups:
-            issues = sorted(group.issues, key=lambda i: i.run is None)
+            issues = self.shown(group)
             if self.every:
-                rows.append((group.repository, [WORKSPACE_MARK, Text(group_title(group), style="bold")]))
+                folded = group.repository in self.folded
+                rows.append((group.repository, [FOLDED_MARK if folded else UNFOLDED_MARK,
+                                                 Text(group_title(group, folded), style="bold")]))
                 rows += [(self.row_key(i), [RUN_MARK if i.run else "", f"{i.number}  {issue_title(i)}"])
                          for i in issues]
             else:
@@ -273,8 +294,13 @@ class IdeApp(App):
         current = self.current_in()
         if current:
             table.move_cursor(row=table.get_row_index(self.row_key(current)))
-        elif self.on_header is not None and self.group_of(self.on_header):
-            table.move_cursor(row=table.get_row_index(self.on_header))
+        elif self.every and self.groups:
+            # On a workspace's row: the one the cursor was on, the folded one of the highlighted issue, or the first.
+            for header in (self.on_header, self.current.repository if self.current else None, self.groups[0].repository):
+                if header is not None and self.group_of(header):
+                    self.on_header = header
+                    table.move_cursor(row=table.get_row_index(header))
+                    break
 
     def action_refresh_issues(self) -> None:
         if self.static:
@@ -332,7 +358,13 @@ class IdeApp(App):
                 group.listed = True
                 self.stamp(group, result)
         try:
+            known = {g.repository for g in self.groups}
             self.groups = groups
+            for group in groups:
+                # A workspace seen for the first time opens unfolded when it has a run or was chosen recently.
+                if group.repository not in known and group.name not in self.recent and not any(
+                        self.run_repository(r) == group.repository for r in self.runs):
+                    self.folded.add(group.repository)
             self.show_issues()
             if self.runs_read:
                 self.count_runs()  # the runs read before the workspaces were known
@@ -394,6 +426,7 @@ class IdeApp(App):
         started = after - before
         if any(self.started.pop(k, None) for k in after):
             self.set_message("start", "")  # the coordination session prepared the run
+        self.folded -= {repository for repository, _ in started}  # a run that starts shows in its workspace
         if started and (self.current is None or self.current.run is None):
             # The operator is not looking at a run: move to the issue whose run just started.
             self.on_header = None
@@ -512,6 +545,9 @@ class IdeApp(App):
             return
         self.started[key] = pane
         self.set_message("start", f"{self.label(key)}: coordination session in {pane}")
+        group = self.group_of(key[0])
+        if self.every and group:
+            self.remember(group.name, True)
 
     async def focus_started(self, key: IssueKey) -> None:
         pane = self.started[key]
@@ -609,12 +645,39 @@ class IdeApp(App):
         self.show_issue(next((i for i in self.issues if self.row_key(i) == key), None))
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if event.data_table.id == "sessions" and event.row_key.value is not None:
+        if event.data_table.id == "issues" and self.every and self.group_of(event.row_key.value):
+            self.fold(event.row_key.value)
+        elif event.data_table.id == "sessions" and event.row_key.value is not None:
             self.run_worker(self.focus_session(event.row_key.value), group="focus", exclusive=True)
         elif event.data_table.id == "run":
             steps = self.current.run.steps if self.current and self.current.run else []
             if 0 <= event.cursor_row < len(steps):
                 self.push_screen(StepDetail(steps[event.cursor_row], event.cursor_row + 1), self.go_to_step)
+
+    def fold(self, repository: str) -> None:
+        """Fold the workspace of `repository`, or unfold it; an unfolded one is remembered as chosen recently."""
+        group = self.group_of(repository)
+        unfolding = repository in self.folded
+        if unfolding:
+            self.folded.discard(repository)
+        else:
+            self.folded.add(repository)
+        self.on_header = repository
+        self.render_issues()
+        self.show_issue(self.current_in())
+        self.remember(group.name, unfolding)
+
+    def remember(self, name: str, chose: bool) -> None:
+        """Keep workspace `name` as chosen recently, or drop it when folded, in the state file."""
+        recent = chosen(self.recent, name) if chose else [n for n in self.recent if n != name]
+        if recent == self.recent:
+            return
+        self.recent = recent
+        if self.state_file:
+            try:
+                write_recent(self.state_file, recent)
+            except OSError as e:
+                self.set_message("state", f"state: {e}")
 
     def go_to_step(self, label: Optional[str]) -> None:
         """Highlight the first step named `label` in the run pane (the detail's cause)."""
@@ -691,7 +754,10 @@ class IdeApp(App):
                  (f"#{issue.number}" + (" (closed)" if issue.closed else "")) if issue else "no issue",
                  run.name if run else "no run"]
         parts += [m for m in self.messages.values() if m]
-        self.query_one("#status", Static).update("  |  ".join(parts))
+        try:
+            self.query_one("#status", Static).update("  |  ".join(parts))
+        except NoMatches:
+            pass  # the app is closing (a timer can fire meanwhile): its widgets are gone
 
     def action_focus_pane(self, pane: str) -> None:
         self.query_one(f"#{pane}", DataTable).focus()
@@ -794,7 +860,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             repository = repository_from_workspace(args.workspace)
         except IssueSourceError as e:
             parser.error(str(e))
-    IdeApp(repository=repository, coordinator=args.coordinator, version=ide_version()).run()
+    IdeApp(repository=repository, coordinator=args.coordinator, version=ide_version(), state_file=state_path()).run()
 
 
 if __name__ == "__main__":
