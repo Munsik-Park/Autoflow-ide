@@ -19,7 +19,7 @@ from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repositor
 from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
 from autoflow_ide.start import (Setting, StartError, Workspace, coordinator_base, coordinator_workspace,
-                               coordinator_workspace_entry, coordinator_workspaces, create_workspace, is_repository,
+                               coordinator_workspace_entry, coordinator_workspaces, create_workspace, repository_of,
                                setting_source, start_run)
 from autoflow_ide.state import chosen, read_recent, state_path, write_recent
 from autoflow_ide.tables import ColumnSpec, fill
@@ -37,7 +37,8 @@ Placer = Callable[[], Awaitable[Dict[str, str]]]
 WorkspacesReader = Callable[[str], Awaitable[List[Workspace]]]
 # Reads the coordinator's base and where it was set, given the coordinator clone.
 BaseReader = Callable[[str], Awaitable[Setting]]
-# Opens a coordination session that makes a workspace, given the coordinator clone and the repository; its pane id.
+# Opens a coordination session that makes a workspace, given the coordinator clone and the repository's address as
+# the operator typed it; its pane id.
 WorkspaceCreator = Callable[[str, str], Awaitable[str]]
 # An issue by its repository (owner/name) and number: numbers alone repeat across repositories.
 IssueKey = Tuple[str, int]
@@ -645,24 +646,25 @@ class IdeApp(App):
         self.finding, self.adding = None, True
         box = self.query_one("#find", Input)
         box.border_title = "New workspace"
-        box.placeholder = "owner/name"
-        box.restrict = r"[A-Za-z0-9._/-]*"
+        box.placeholder = "GitHub address"
+        box.restrict = r"[A-Za-z0-9._/:@-]*"  # owner/name, the web address or a clone address (start.py)
         box.value = ""
         box.display = True
         box.focus()
 
-    def add_workspace(self, repository: str) -> None:
-        if not is_repository(repository):
-            self.set_message("workspace", f"add workspace: {repository} is not owner/name")
+    def add_workspace(self, address: str) -> None:
+        repository = repository_of(address)
+        if repository is None:
+            self.set_message("workspace", f"add workspace: {address} is not a GitHub repository")
         elif repository in self.creating:
             self.run_worker(self.focus_creating(repository), group="workspace", exclusive=True)
         else:
-            self.run_worker(self.create(repository), group="workspace", exclusive=True)
+            self.run_worker(self.create(repository, address), group="workspace", exclusive=True)
 
-    async def create(self, repository: str) -> None:
+    async def create(self, repository: str, address: str) -> None:
         self.set_message("workspace", f"workspace for {repository}: opening the coordination session")
         try:
-            pane = await self.workspace_creator(self.coordinator, repository)
+            pane = await self.workspace_creator(self.coordinator, address)
         except StartError as e:
             self.set_message("workspace", f"add workspace: {e}")
             return
