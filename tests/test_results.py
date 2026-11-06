@@ -2,7 +2,9 @@
 (tests/fixtures/README.md)."""
 from pathlib import Path
 
-from autoflow_ide.results import read_outcome
+import json
+
+from autoflow_ide.results import OUTPUT_LIMIT, output_path, read_outcome, read_output
 
 RECORDS = Path(__file__).parent / "fixtures" / "records" / "autoflow-sandbox-6-results"
 
@@ -63,3 +65,24 @@ def test_unreadable_files_are_named(tmp_path):
     outcome = read_outcome(str(tmp_path))
     assert outcome.has_result and outcome.status is None
     assert [u.split(":")[0] for u in outcome.unreadable] == ["result.json", "evaluation.json"]
+
+
+def test_a_listed_output_is_found_where_result_json_names_it():
+    outcome = read_outcome(str(RECORDS / "review-1"))
+    paths = [output_path(str(RECORDS / "review-1"), o) for o in outcome.outputs]
+    assert paths[-1] == RECORDS / "review-1" / "review-findings.md" and read_output(paths[-1]).kind == "markdown"
+    assert output_path("/r/x", "/elsewhere/a.md") == Path("/elsewhere/a.md")
+
+
+def test_an_output_read_to_show_it(tmp_path):
+    (tmp_path / "a.json").write_text('{"b": [1, 2]}')
+    (tmp_path / "bad.json").write_text("{not json")
+    (tmp_path / "big.md").write_text("x" * (OUTPUT_LIMIT + 10))
+    (tmp_path / "dir").mkdir()
+    (tmp_path / "dir" / "f.txt").write_text("")
+    assert read_output(tmp_path / "a.json").text == json.dumps({"b": [1, 2]}, indent=2)
+    assert (read_output(tmp_path / "bad.json").kind, read_output(tmp_path / "bad.json").text) == ("text", "{not json")
+    big = read_output(tmp_path / "big.md")
+    assert (big.kind, big.cut, len(big.text)) == ("markdown", True, OUTPUT_LIMIT)
+    assert (read_output(tmp_path / "dir").kind, read_output(tmp_path / "dir").text) == ("folder", "f.txt")
+    assert read_output(tmp_path / "gone.md").kind == "missing"
