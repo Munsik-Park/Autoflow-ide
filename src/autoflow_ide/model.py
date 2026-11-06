@@ -79,6 +79,8 @@ class Issue:
     state: Optional[str] = "open"
     # The repository (owner/name) it belongs to, set when the IDE lists it.
     repository: Optional[str] = None
+    # A pull request looked up by its number: not an issue to run.
+    pull: bool = False
 
     @property
     def closed(self) -> bool:

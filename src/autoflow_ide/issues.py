@@ -12,7 +12,9 @@ FIELDS = "number,title"
 # is reached by its number or words (issue #44).
 RECENT_ISSUES = 5
 # One issue through the REST API (gh issue view needs GraphQL); state is "open" or "closed".
-ISSUE_JQ = "{number: .number, title: .title, state: .state}"
+# The REST API gives a pull request for its number too (issues and pull requests share the numbers); `pull`
+# tells them apart.
+ISSUE_JQ = "{number: .number, title: .title, state: .state, pull: (.pull_request != null)}"
 
 
 class IssueSourceError(Exception):
@@ -32,7 +34,7 @@ def parse_issue(text: str) -> Issue:
     """One issue from the output of `gh api repos/<owner>/<name>/issues/<n> --jq ISSUE_JQ`."""
     try:
         row = json.loads(text)
-        return Issue(int(row["number"]), str(row["title"]), state=str(row["state"]))
+        return Issue(int(row["number"]), str(row["title"]), state=str(row["state"]), pull=bool(row.get("pull")))
     except (ValueError, TypeError, KeyError) as e:
         raise IssueSourceError(f"unexpected gh output: {e}") from e
 
