@@ -1446,3 +1446,31 @@ async def test_w_opens_nothing_for_what_is_not_a_github_repository_or_a_workspac
         await pilot.press("w", "a", "escape")                                 # Esc closes the box, opens nothing
         await settle(app, pilot)
         assert not app.query_one("#find", Input).display and len(created) == 1
+
+
+# The highlighted step is kept when the issue list is redrawn (#65)
+
+async def test_the_highlighted_step_is_kept_when_the_issue_list_is_redrawn():
+    run = Run("autoflow-sandbox-3-k", [Step("a", "pass", "pass"), Step("b", "pass", "pass"),
+                                       Step("c", "pass", "pass"), Step("d", "running")],
+              [Session("S1", "working")], issue="3")
+    app = every_app(runs=[run])
+    async with app.run_test(size=(124, 36)) as pilot:
+        await settle(app, pilot)
+        issues, steps = app.query_one("#issues", DataTable), app.query_one("#run", DataTable)
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox#3"))
+        await settle(app, pilot)
+        await pilot.press("2")
+        steps.move_cursor(row=2)
+        for redraw in (app.render_issues, lambda: app.show_runs(list(app.runs))):   # as every read of runs does
+            redraw()
+            await settle(app, pilot)
+            await pilot.pause(0.2)
+            assert steps.cursor_row == 2 and app.current.number == 3
+        await pilot.press("r")                                                    # the issues read again
+        await settle(app, pilot)
+        await pilot.pause(0.2)
+        assert steps.cursor_row == 2
+        await pilot.press("1", "up")                                              # moving by hand still shows
+        await settle(app, pilot)
+        assert app.on_header == "Munsik-Park/autoflow-sandbox" and app.current is None
