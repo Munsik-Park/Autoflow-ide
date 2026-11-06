@@ -31,9 +31,11 @@ RUN_REFRESH_SEC = 5.0
 # key press (about 60 gh calls an hour), and when a step changes (see show_runs).
 ISSUE_REFRESH_SEC = 60.0
 # The coordination session window of an issue that is closed and has no run is closed once its screen has not
-# changed for WINDOW_IDLE_SEC, so a last report being written is not cut off; checked every WINDOW_CHECK_SEC.
+# changed for WINDOW_IDLE_SEC, so a last report being written is not cut off and the operator can come back after
+# a merge to go on with the session, whose screen stands still while it waits for input; checked every
+# WINDOW_CHECK_SEC.
 WINDOW_CHECK_SEC = 15.0
-WINDOW_IDLE_SEC = 60.0
+WINDOW_IDLE_SEC = 300.0
 RUN_MARK = "●"
 ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("#", "number", 4), ("Title", "title", None)]
 RUN_COLUMNS: List[ColumnSpec] = [("Step", "step", 4), ("Module run", "name", None), ("Session", "session", 7),
