@@ -33,6 +33,19 @@ def describe(step: Step) -> List[Tuple[str, str]]:
     return rows
 
 
+def row_cells(step: Step) -> List[Tuple[str, str]]:
+    """(title, text) of the run record's cells for the step's row: its Verdict cell when it says more than the
+    verdict, and its Notes cell when not empty."""
+    cells = []
+    verdict_text = (step.verdict_text or "").strip()
+    if verdict_text and verdict_text.lower() != (step.verdict or "").strip().lower():
+        cells.append(("Verdict, as the run record has it", verdict_text))
+    notes = (step.notes or "").strip()
+    if notes:
+        cells.append(("Notes", notes))
+    return cells
+
+
 def note(step: Step, outcome: Optional[Outcome]) -> Optional[str]:
     """Why there is nothing to show from the folder, when there is not."""
     if not step.out:
@@ -114,6 +127,9 @@ class StepDetail(ModalScreen[Optional[str]]):
             with VerticalScroll(id="detail-body"):
                 yield Static("\n".join(f"{label:<{LABEL_WIDTH}} {value}" for label, value in describe(self.step)),
                              id="detail-fields")
+                for title, text in row_cells(self.step):
+                    yield Static(title, classes="detail-section")
+                    yield Static(Text(text), classes="detail-cell")
                 message = note(self.step, self.outcome)
                 if message:
                     yield Static(message, classes="detail-note")
