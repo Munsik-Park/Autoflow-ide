@@ -1151,3 +1151,88 @@ async def test_a_with_one_repository():
         await settle(app, pilot)
         issues = app.query_one("#issues", DataTable)
         assert [str(issues.get_row_at(i)[1]) for i in range(issues.row_count)] == ["3"]
+
+
+async def test_hash_finds_a_listed_issue_in_a_folded_workspace():
+    app = every_app(recent=[])
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox"))
+        await pilot.press("number_sign", "3", "enter")
+        await settle(app, pilot)
+        assert app.current.number == 3 and app.current.repository == "Munsik-Park/autoflow-sandbox"
+        assert keys(issues)[issues.cursor_row] == "Munsik-Park/autoflow-sandbox#3"
+        assert app.focused is issues
+
+
+async def test_hash_looks_up_an_issue_not_listed_and_s_says_it_is_closed():
+    asked, started = [], []
+
+    async def lookup(repository, number):
+        asked.append((repository, number))
+        return Issue(number, "an old one", state="closed")
+
+    async def starter(coordinator, repository, number):
+        started.append(number)
+        return "%9"
+
+    app = every_app(lookup=lookup, starter=starter)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox#4"))
+        await pilot.press("number_sign", "1", "2", "s", "enter")   # s is not a digit: not typed, not a start
+        await settle(app, pilot)
+        assert asked == [("Munsik-Park/autoflow-sandbox", 12)] and started == []
+        assert keys(issues)[issues.cursor_row] == "Munsik-Park/autoflow-sandbox#12"
+        assert "autoflow-sandbox#12 is closed" in status(app)
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert started == [] and "autoflow-sandbox#12 is closed" in status(app)
+        await pilot.press("escape")                                 # clears what was found
+        await settle(app, pilot)
+        assert "Munsik-Park/autoflow-sandbox#12" not in keys(issues)
+
+
+async def test_slash_finds_issues_by_words_and_letters_do_not_act():
+    searched = []
+
+    async def searcher(repository, words):
+        searched.append((repository, words))
+        return [Issue(40, "send parts"), Issue(4, "four")]
+
+    app = every_app(searcher=searcher)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-coordinator"))
+        await pilot.press("slash", *"send as", "enter")
+        await settle(app, pilot)
+        assert searched == [("Munsik-Park/autoflow-coordinator", "send as")]
+        assert app.query_one("#issues-pane").border_title == "Issues"     # the a in the words did nothing
+        assert keys(issues)[1:5] == ["Munsik-Park/autoflow-coordinator#67", "Munsik-Park/autoflow-coordinator#24",
+                                     "Munsik-Park/autoflow-coordinator#40", "Munsik-Park/autoflow-coordinator#4"]
+        assert app.current.number == 40
+        assert '2 found for "send as" in autoflow-coordinator' in status(app)
+
+
+async def test_escape_closes_the_find_box_without_finding():
+    app = every_app()
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("slash", "x", "escape")
+        await settle(app, pilot)
+        assert not app.query_one("#find").display and app.focused is app.query_one("#issues", DataTable)
+
+
+async def test_hash_with_one_repository():
+    async def lookup(repository, number):
+        return Issue(number, "nine")
+
+    app = coordinated_app(lookup=lookup)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.press("number_sign", "9", "enter")
+        await settle(app, pilot)
+        assert app.current.number == 9 and app.current.repository == "Munsik-Park/autoflow-sandbox"

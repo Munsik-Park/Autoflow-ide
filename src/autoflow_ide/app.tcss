@@ -78,3 +78,8 @@ StepDetail {
     text-wrap: nowrap;
     text-overflow: ellipsis;
 }
+
+#find {
+    dock: bottom;
+    border: tall $accent;
+}
