@@ -527,7 +527,8 @@ INFO_LABEL_WIDTH = 10
 def info_lines(repository: Optional[str], workspace: Optional[Workspace], workspace_error: Optional[str],
                run: Optional[Run], places: Dict[str, str]) -> List[Tuple[str, str]]:
     """(label, value) lines for the info above the run pane. The workspace lines come from repo.json; the run
-    lines from status.py, the coordination session's pane placed in tmux when it is found there."""
+    lines from status.py (its worktree and record folder from coordinator v0.7.0-rc6), the coordination session's
+    pane placed in tmux when it is found there."""
     lines = [("repo", repository or "(no repository)")]
     if workspace:
         lines.append(("workspace", workspace.name))
@@ -544,6 +545,10 @@ def info_lines(repository: Optional[str], workspace: Optional[Workspace], worksp
         lines.append(("workflow", run.reference))
     if run.branch:
         lines.append(("branch", run.branch))
+    if run.checkout:
+        lines.append(("worktree", home_short(run.checkout)))
+    if run.records:
+        lines.append(("records", home_short(run.records)))
     if run.coordination:
         place = places.get(run.coordination)
         lines.append(("session", f"tmux {place}" if place else run.coordination))

@@ -38,11 +38,15 @@ def test_parse_recorded_results():
         ("↺ review-3 ← review-1", "fail", "failed", records + "review-3"),
         ("↺ review-4 ← review-1", "running", None, records + "review-4"),
     ]
+    assert (run.checkout, run.records) == (
+        "/home/claude/fx/base/autoflow-sandbox/autoflow-sandbox-wt-6-results", records.rstrip("/"))
 
 
-def test_before_rc5_a_step_has_no_out_or_result():
+def test_before_rc5_a_step_has_no_out_or_result_and_before_rc6_a_run_no_checkout_or_records():
     [run] = parse_status(fixture("status-cycle.json"))
     assert {(s.out, s.result) for s in run.steps} == {(None, None)}
+    [coordination] = parse_status(fixture("status-coordination.json"))   # rc4
+    assert (coordination.checkout, coordination.records) == (None, None)
 
 
 def test_parse_recorded_coordination_surface():

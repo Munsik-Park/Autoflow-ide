@@ -761,7 +761,7 @@ async def test_info_above_the_run_shows_the_workspace_and_where_the_run_is():
     from autoflow_ide.start import StartError, Workspace
 
     run = Run("repo-1-k", [Step("analysis", "running")], [Session("S1", "working", "%5")], issue="1",
-              branch="issue-1-k", reference="review-only", coordination="%4")
+              branch="issue-1-k", reference="review-only", coordination="%4", checkout="/nowhere/wt-1-k")
 
     async def loader(repository):
         return [Issue(1, "one"), Issue(2, "two")]
@@ -783,8 +783,10 @@ async def test_info_above_the_run_shows_the_workspace_and_where_the_run_is():
             await pilot.pause()
         info = str(app.query_one("#info", Static).render())
         for line in ("repo      owner/repo", "workspace repo", "clone     /nowhere/clone (main)", "run       repo-1-k",
-                     "workflow  review-only", "branch    issue-1-k", "session   tmux 2:1 repo#1"):
+                     "workflow  review-only", "branch    issue-1-k", "worktree  /nowhere/wt-1-k",
+                     "session   tmux 2:1 repo#1"):
             assert line in info
+        assert "records" not in info                                  # null: the line is left out
         await pilot.press("down")
         await pilot.pause()
         info = str(app.query_one("#info", Static).render())
