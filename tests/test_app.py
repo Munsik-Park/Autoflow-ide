@@ -1182,7 +1182,7 @@ async def test_hash_looks_up_an_issue_not_listed_and_s_says_it_is_closed():
         await settle(app, pilot)
         issues = app.query_one("#issues", DataTable)
         issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox#4"))
-        await pilot.press("number_sign", "1", "2", "s", "enter")   # s is not a digit: not typed, not a start
+        await pilot.press("number_sign", "1", "2", "s", "a", "/", "enter")   # not digits: not typed, not keys
         await settle(app, pilot)
         assert asked == [("Munsik-Park/autoflow-sandbox", 12)] and started == []
         assert keys(issues)[issues.cursor_row] == "Munsik-Park/autoflow-sandbox#12"
@@ -1195,33 +1195,11 @@ async def test_hash_looks_up_an_issue_not_listed_and_s_says_it_is_closed():
         assert "Munsik-Park/autoflow-sandbox#12" not in keys(issues)
 
 
-async def test_slash_finds_issues_by_words_and_letters_do_not_act():
-    searched = []
-
-    async def searcher(repository, words):
-        searched.append((repository, words))
-        return [Issue(40, "send parts"), Issue(4, "four")]
-
-    app = every_app(searcher=searcher)
-    async with app.run_test(size=(121, 37)) as pilot:
-        await settle(app, pilot)
-        issues = app.query_one("#issues", DataTable)
-        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-coordinator"))
-        await pilot.press("slash", *"send as", "enter")
-        await settle(app, pilot)
-        assert searched == [("Munsik-Park/autoflow-coordinator", "send as")]
-        assert app.query_one("#issues-pane").border_title == "Issues"     # the a in the words did nothing
-        assert keys(issues)[1:5] == ["Munsik-Park/autoflow-coordinator#67", "Munsik-Park/autoflow-coordinator#24",
-                                     "Munsik-Park/autoflow-coordinator#40", "Munsik-Park/autoflow-coordinator#4"]
-        assert app.current.number == 40
-        assert '2 found for "send as" in autoflow-coordinator' in status(app)
-
-
 async def test_escape_closes_the_find_box_without_finding():
     app = every_app()
     async with app.run_test(size=(121, 37)) as pilot:
         await settle(app, pilot)
-        await pilot.press("slash", "x", "escape")
+        await pilot.press("number_sign", "1", "escape")
         await settle(app, pilot)
         assert not app.query_one("#find").display and app.focused is app.query_one("#issues", DataTable)
 
@@ -1260,3 +1238,26 @@ async def test_a_with_no_run_says_so_until_one_starts():
         await pilot.press("a")
         await settle(app, pilot)
         assert "no issue has a run" not in status(app)
+
+
+async def test_hash_goes_to_exactly_that_number():
+    asked = []
+
+    async def loader(repository):
+        return [Issue(200, "two hundred"), Issue(20, "twenty"), Issue(2, "two")]
+
+    async def lookup(repository, number):
+        asked.append(number)
+        return Issue(number, "x")
+
+    async def runs(coordinator):
+        return []
+
+    app = IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c", run_loader=runs,
+                 lookup=lookup)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.press("number_sign", "2", "0", "enter")
+        await settle(app, pilot)
+        assert app.current.number == 20 and asked == []
+        assert app.query_one("#issues", DataTable).row_count == 3      # nothing added
