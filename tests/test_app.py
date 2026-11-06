@@ -880,3 +880,15 @@ async def test_the_detail_shows_the_row_cells_above_the_output_folder():
         await pilot.pause()
         text = detail_text(app)
         assert text.index("F1 fixed by X1") < text.index("Review findings (review-findings.md)")
+
+
+async def test_the_ide_version_is_in_the_bottom_right_corner():
+    app = IdeApp(issues=sample(), version="68afb41")
+    async with app.run_test(size=(121, 37)) as pilot:
+        await pilot.pause()
+        assert app.query_one("#sessions-pane").border_subtitle == "ide 68afb41"
+        bottom = app.export_screenshot()
+    app = IdeApp(issues=sample())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not app.query_one("#sessions-pane").border_subtitle
