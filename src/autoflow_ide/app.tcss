@@ -48,3 +48,11 @@ StepDetail {
     margin-top: 1;
     color: $text-muted;
 }
+
+#info {
+    height: auto;
+    padding: 0 1;
+    border-bottom: solid $panel-lighten-2;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}

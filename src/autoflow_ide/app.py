@@ -1,11 +1,13 @@
 """The IDE screen: issues, the selected issue's run, and its sessions."""
 import argparse
 import time
+from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
+from rich.text import Text
 from textual.widgets import DataTable, Footer, Static
 
 from autoflow_ide.detail import StepDetail
@@ -13,9 +15,9 @@ from autoflow_ide.focus import FocusError, focus_surface
 from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repository_from_workspace
 from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
-from autoflow_ide.start import StartError, coordinator_workspace, start_run
+from autoflow_ide.start import StartError, Workspace, coordinator_workspace, coordinator_workspace_entry, start_run
 from autoflow_ide.tables import ColumnSpec, fill
-from autoflow_ide.windows import TmuxWindows, WindowError
+from autoflow_ide.windows import TmuxWindows, WindowError, pane_places
 
 IssueLoader = Callable[[str], Awaitable[List[Issue]]]
 WorkspaceFinder = Callable[[str, str], Awaitable[str]]
@@ -23,6 +25,8 @@ IssueLookup = Callable[[str, int], Awaitable[Issue]]
 RunLoader = Callable[[str], Awaitable[List[Run]]]
 Focuser = Callable[[str], Awaitable[None]]
 Starter = Callable[[str, str, int], Awaitable[str]]
+WorkspaceReader = Callable[[str, str], Awaitable[Workspace]]
+Placer = Callable[[], Awaitable[Dict[str, str]]]
 RUN_REFRESH_SEC = 5.0
 # The open issues are also read again on this interval, so an issue a merge closed leaves the list without a
 # key press (about 60 gh calls an hour), and when a step changes (see show_runs).
@@ -56,13 +60,16 @@ class IdeApp(App):
                  run_refresh_sec: float = RUN_REFRESH_SEC, lookup: Optional[IssueLookup] = None,
                  starter: Optional[Starter] = None, issue_refresh_sec: float = ISSUE_REFRESH_SEC,
                  windows=None, workspace_finder: Optional[WorkspaceFinder] = None,
-                 window_check_sec: float = WINDOW_CHECK_SEC, window_idle_sec: float = WINDOW_IDLE_SEC):
+                 window_check_sec: float = WINDOW_CHECK_SEC, window_idle_sec: float = WINDOW_IDLE_SEC,
+                 workspace_reader: Optional[WorkspaceReader] = None, placer: Optional[Placer] = None):
         """With `issues`, show them as given. Otherwise load the open issues of `repository` with `loader`,
         again every `issue_refresh_sec` seconds.
         With `coordinator` (a coordinator clone), read its active runs every `run_refresh_sec` seconds.
         An issue that has a run but is not in the open list is looked up with `lookup`.
         `starter` opens the coordination session for an issue (see start.py); `windows` finds and closes those
-        sessions' windows (see windows.py) in the workspace `workspace_finder` names."""
+        sessions' windows (see windows.py) in the workspace `workspace_finder` names.
+        `workspace_reader` reads that workspace's repo.json and `placer` where each tmux pane is, both shown
+        above the run pane."""
         super().__init__()
         self.open_issues: List[Issue] = list(issues) if issues is not None else []
         self.issues: List[Issue] = list(self.open_issues)
@@ -93,6 +100,13 @@ class IdeApp(App):
         self.window_check_sec = window_check_sec
         self.window_idle_sec = window_idle_sec
         self.workspace: Optional[str] = None
+        self.workspace_reader = workspace_reader or coordinator_workspace_entry
+        # The workspace of the repository, or why it could not be read; None until read.
+        self.workspace_entry: Optional[Workspace] = None
+        self.workspace_error: Optional[str] = None
+        self.placer = placer or pane_places
+        # Where each tmux pane is ("2:1 autoflow-coordinator#59"), by pane id, as last read.
+        self.places: Dict[str, str] = {}
         # The coordination session windows, by issue: (window id, its screen, when that screen was first seen).
         self.screens: Dict[int, Tuple[str, str, float]] = {}
         # When an issue was last looked up and found open, so it is not looked up on every check.
@@ -109,6 +123,7 @@ class IdeApp(App):
                 yield DataTable(id="issues", cursor_type="row")
             with Vertical(id="run-pane", classes="pane") as pane:
                 pane.border_title = "Run"
+                yield Static(id="info")
                 yield DataTable(id="run", cursor_type="row")
             with Vertical(id="sessions-pane", classes="pane") as pane:
                 pane.border_title = "Sessions"
@@ -124,6 +139,8 @@ class IdeApp(App):
             self.set_interval(self.issue_refresh_sec, self.action_refresh_issues)
         if self.coordinator:
             self.set_message("version", version_notice(self.coordinator))
+            if self.repository and not self.static:
+                self.run_worker(self.load_workspace(), group="workspace")
             self.refresh_runs()
             self.set_interval(self.run_refresh_sec, self.refresh_runs)
             if not self.static and self.repository:
@@ -207,6 +224,31 @@ class IdeApp(App):
                 self.set_message("runs", error)
             else:
                 self.show_runs(runs)
+        except NoMatches:
+            pass  # the app is closing: its widgets are gone
+        if runs is not None and any(r.coordination for r in self.own_runs()):
+            await self.load_places()
+
+    async def load_places(self) -> None:
+        """Where the panes are, for the coordination session of the shown run; kept as last read on a failure."""
+        try:
+            self.places = await self.placer()
+        except WindowError:
+            return
+        try:
+            self.render_info()
+        except NoMatches:
+            pass  # the app is closing: its widgets are gone
+
+    # The workspace
+
+    async def load_workspace(self) -> None:
+        try:
+            self.workspace_entry = await self.workspace_reader(self.coordinator, self.repository)
+        except StartError as e:
+            self.workspace_error = str(e)
+        try:
+            self.render_info()
         except NoMatches:
             pass  # the app is closing: its widgets are gone
 
@@ -454,6 +496,13 @@ class IdeApp(App):
             self.set_message("run", f"{run.name}: {run.error}")
         else:
             self.set_message("run", "")
+        self.render_info()
+
+    def render_info(self) -> None:
+        """Whose work the selected issue is and where it happens, above its run."""
+        run = self.current.run if self.current else None
+        self.query_one("#info", Static).update(info_text(info_lines(
+            self.repository, self.workspace_entry, self.workspace_error, run, self.places)))
 
     # Status line
 
@@ -471,6 +520,54 @@ class IdeApp(App):
 
     def action_focus_pane(self, pane: str) -> None:
         self.query_one(f"#{pane}", DataTable).focus()
+
+
+INFO_LABEL_WIDTH = 10
+
+
+def info_lines(repository: Optional[str], workspace: Optional[Workspace], workspace_error: Optional[str],
+               run: Optional[Run], places: Dict[str, str]) -> List[Tuple[str, str]]:
+    """(label, value) lines for the info above the run pane. The workspace lines come from repo.json; the run
+    lines from status.py, the coordination session's pane placed in tmux when it is found there."""
+    lines = [("repo", repository or "(no repository)")]
+    if workspace:
+        lines.append(("workspace", workspace.name))
+        if workspace.clone:
+            lines.append(("clone", home_short(workspace.clone)
+                          + (f" ({workspace.base_branch})" if workspace.base_branch else "")))
+    elif workspace_error:
+        lines.append(("workspace", workspace_error))
+    if not run:
+        lines.append(("run", "none"))
+        return lines
+    lines.append(("run", run.name))
+    if run.reference:
+        lines.append(("workflow", run.reference))
+    if run.branch:
+        lines.append(("branch", run.branch))
+    if run.coordination:
+        place = places.get(run.coordination)
+        lines.append(("session", f"tmux {place}" if place else run.coordination))
+    return lines
+
+
+def info_text(lines: List[Tuple[str, str]]) -> Text:
+    text = Text(no_wrap=True, overflow="ellipsis")
+    for n, (label, value) in enumerate(lines):
+        if n:
+            text.append("\n")
+        text.append(label.ljust(INFO_LABEL_WIDTH), style="dim")
+        text.append(value)
+    return text
+
+
+def home_short(path: str) -> str:
+    """`path` with the home folder written as ~, as the operator types it."""
+    full = Path(path).expanduser()
+    try:
+        return "~/" + str(full.relative_to(Path.home()))
+    except ValueError:
+        return str(full)
 
 
 def issue_title(issue: Issue) -> str:

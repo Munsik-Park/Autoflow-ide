@@ -32,7 +32,7 @@ autoflow-ide --workspace <workspace>    # the repository named in a coordinator 
 autoflow-ide --demo                     # placeholder data
 ```
 
-Add `--coordinator <autoflow-coordinator clone>` to show the active runs: the IDE reads the coordinator's `tools/status.py` every 5 seconds and shows each run under its issue. In the run pane, Enter opens what happened in a step: its state, verdict, session, and whether it is the module's first run, a rerun or a return and which step sent it back (`c` goes to that step). In the sessions pane, Enter moves tmux focus to that session's pane.
+Add `--coordinator <autoflow-coordinator clone>` to show the active runs: the IDE reads the coordinator's `tools/status.py` every 5 seconds and shows each run under its issue. Above the run pane, the highlighted issue's repository and its workspace (name, clone and base branch, from the workspace's `repo.json`) and, when it has a run, the run's name, workflow and branch and where its coordination session is in tmux (session:window and the window's name). In the run pane, Enter opens what happened in a step: its state, verdict, session, and whether it is the module's first run, a rerun or a return and which step sent it back (`c` goes to that step). In the sessions pane, Enter moves tmux focus to that session's pane.
 
 The open issues are read again every minute, when a step of a run changes its state or verdict or a step is added, and when a run ends, so an issue closed by a merge leaves the list without a key press (an issue that still has a run stays as a "(closed)" row). `r` reloads them at once.
 

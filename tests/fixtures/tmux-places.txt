@@ -1,0 +1,6 @@
+%0 1:0 ide
+%5 1:1 tmux
+%1 2:0 bash
+%2 2:1 autoflow-coordinator#59
+%3 2:1 autoflow-coordinator#59
+%4 2:2 my window

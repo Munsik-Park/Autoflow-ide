@@ -22,6 +22,12 @@ def test_parse_recorded_run():
         ("build-1 (rerun)", "S2", "noted", "noted"),
     ]
     assert [(s.name, s.state, s.surface) for s in run.sessions] == [("S1", "exited", "%1"), ("S2", "exited", "%2")]
+    assert (run.reference, run.coordination) == ("analysis-review", None)   # rc2 has no coordination
+
+
+def test_parse_recorded_coordination_surface():
+    [run] = parse_status(fixture("status-coordination.json"))
+    assert (run.reference, run.branch, run.coordination) == ("review-only", "issue-3-coord", "%34")
 
 
 def test_parse_recorded_error_and_none():

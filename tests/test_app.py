@@ -669,3 +669,48 @@ async def test_keeps_windows_while_the_runs_cannot_be_read():
         await pilot.pause(0.5)
         await settle(app, pilot)
         assert windows.closed == [] and asked == []
+
+
+async def test_info_above_the_run_shows_the_workspace_and_where_the_run_is():
+    from autoflow_ide.start import StartError, Workspace
+
+    run = Run("repo-1-k", [Step("analysis", "running")], [Session("S1", "working", "%5")], issue="1",
+              branch="issue-1-k", reference="review-only", coordination="%4")
+
+    async def loader(repository):
+        return [Issue(1, "one"), Issue(2, "two")]
+
+    async def runs(coordinator):
+        return [run]
+
+    async def workspace(coordinator, repository):
+        return Workspace("repo", repository, "/nowhere/clone", "main")
+
+    async def places():
+        return {"%4": "2:1 repo#1", "%5": "2:1 repo#1"}
+
+    app = IdeApp(repository="owner/repo", loader=loader, coordinator="/c", run_loader=runs,
+                 workspace_reader=workspace, placer=places)
+    async with app.run_test(size=(160, 30)) as pilot:
+        for _ in range(3):
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        info = str(app.query_one("#info", Static).render())
+        for line in ("repo      owner/repo", "workspace repo", "clone     /nowhere/clone (main)", "run       repo-1-k",
+                     "workflow  review-only", "branch    issue-1-k", "session   tmux 2:1 repo#1"):
+            assert line in info
+        await pilot.press("down")
+        await pilot.pause()
+        info = str(app.query_one("#info", Static).render())
+        assert "run       none" in info and "branch" not in info
+
+    async def no_workspace(coordinator, repository):
+        raise StartError("no workspace for owner/repo in /base")
+
+    app = IdeApp(repository="owner/repo", loader=loader, coordinator="/c", run_loader=runs,
+                 workspace_reader=no_workspace, placer=places)
+    async with app.run_test(size=(160, 30)) as pilot:
+        for _ in range(3):
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert "workspace no workspace for owner/repo in /base" in str(app.query_one("#info", Static).render())
