@@ -759,6 +759,10 @@ class IdeApp(App):
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.data_table.id != "issues" or event.row_key.value is None:
             return
+        if event.cursor_row != event.data_table.cursor_row:
+            # From before the table was rebuilt (render_issues clears it, which puts the cursor on row 0, then
+            # moves it back): showing that row would empty the run pane and lose its highlighted step (#65).
+            return
         key = event.row_key.value
         if self.every and self.group_of(key):
             self.on_header = key
