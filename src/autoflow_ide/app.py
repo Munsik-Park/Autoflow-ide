@@ -19,7 +19,8 @@ from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repositor
 from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
 from autoflow_ide.start import (Setting, StartError, Workspace, coordinator_base, coordinator_workspace,
-                               coordinator_workspace_entry, coordinator_workspaces, setting_source, start_run)
+                               coordinator_workspace_entry, coordinator_workspaces, create_workspace, is_repository,
+                               setting_source, start_run)
 from autoflow_ide.state import chosen, read_recent, state_path, write_recent
 from autoflow_ide.tables import ColumnSpec, fill
 from autoflow_ide.version import ide_version
@@ -36,6 +37,8 @@ Placer = Callable[[], Awaitable[Dict[str, str]]]
 WorkspacesReader = Callable[[str], Awaitable[List[Workspace]]]
 # Reads the coordinator's base and where it was set, given the coordinator clone.
 BaseReader = Callable[[str], Awaitable[Setting]]
+# Opens a coordination session that makes a workspace, given the coordinator clone and the repository; its pane id.
+WorkspaceCreator = Callable[[str, str], Awaitable[str]]
 # An issue by its repository (owner/name) and number: numbers alone repeat across repositories.
 IssueKey = Tuple[str, int]
 RUN_REFRESH_SEC = 5.0
@@ -53,7 +56,7 @@ RUN_MARK = "●"
 # issue found, the state file not written) are shown first on the status line, so a narrow line does not cut
 # them off, and go NOTICE_SEC after they are set (#26). The other messages say what is true now (the counts, the
 # version, a read error until the next read succeeds) and stay while it is.
-NOTICE_SLOTS = ("start", "windows", "focus", "find", "state")
+NOTICE_SLOTS = ("start", "workspace", "windows", "focus", "find", "state")
 NOTICE_SEC = 10.0
 ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("#", "number", 4), ("Title", "title", None)]
 # For every workspace, the number goes with the title, so a workspace's name has the room of both.
@@ -109,6 +112,7 @@ class IdeApp(App):
         ("s", "start_run", "Start run"),
         ("a", "toggle_running", "Running only"),
         ("number_sign", "find", "Issue #"),
+        ("w", "add_workspace", "Workspace"),
         ("escape", "close_find", "Clear found"),
         ("q", "quit", "Quit"),
     ]
@@ -123,7 +127,7 @@ class IdeApp(App):
                  workspace_reader: Optional[WorkspaceReader] = None, placer: Optional[Placer] = None,
                  version: Optional[str] = None, workspaces_reader: Optional[WorkspacesReader] = None,
                  state_file: Optional[Path] = None, notice_sec: float = NOTICE_SEC,
-                 base_reader: Optional[BaseReader] = None):
+                 base_reader: Optional[BaseReader] = None, workspace_creator: Optional[WorkspaceCreator] = None):
         """With `issues`, show them as given. Otherwise load the open issues of `repository` with `loader`,
         again every `issue_refresh_sec` seconds; without `repository` but with `coordinator`, the most recent
         open issues of every workspace of the coordinator's base (`workspaces_reader`), under a row per workspace.
@@ -135,7 +139,8 @@ class IdeApp(App):
         above the run pane.
         `version`, the IDE's own (see version.py), is shown in the bottom-right corner.
         `state_file` keeps the workspaces chosen recently, which open unfolded with those that have a run.
-        `base_reader` reads the coordinator's base and where it was set, again whenever the issues are read."""
+        `base_reader` reads the coordinator's base and where it was set, again whenever the issues are read.
+        `workspace_creator` opens a coordination session that makes a workspace for a repository (`w`)."""
         super().__init__()
         self.version = version
         self.static = issues is not None
@@ -163,6 +168,12 @@ class IdeApp(App):
         self.running_only = False
         # The repository the find box is open for.
         self.finding: Optional[str] = None
+        # Whether the box is open for the repository of a new workspace instead (`w`).
+        self.adding = False
+        self.workspace_creator = workspace_creator or create_workspace
+        # Coordination sessions opened from here to make a workspace, by repository: their pane, until the
+        # workspace shows in the base.
+        self.creating: Dict[str, str] = {}
         self.state_file = state_file
         self.recent: List[str] = read_recent(state_file) if state_file else []
         self.lookup = lookup or gh_issue
@@ -220,7 +231,7 @@ class IdeApp(App):
                     pane.border_subtitle = f"ide {self.version}"
                 yield DataTable(id="sessions", cursor_type="row")
         yield Static(id="status")
-        yield Footer()
+        yield Footer(compact=True)  # every key fits at 124 columns, the operator's terminal
 
     def on_mount(self) -> None:
         self.query_one("#find", Input).display = False
@@ -409,6 +420,9 @@ class IdeApp(App):
         try:
             known = {g.repository for g in self.groups}
             self.groups = groups
+            for group in groups:
+                if self.creating.pop(group.repository, None) is not None:
+                    self.remember(group.name, True)  # made from here: it opens unfolded
             for group in groups:
                 # A workspace seen for the first time opens unfolded when it has a run or was chosen recently.
                 if group.repository not in known and group.name not in self.recent and not any(
@@ -622,6 +636,49 @@ class IdeApp(App):
             return
         self.set_message("start", f"{self.label(key)}: coordination session in {pane}")
 
+    # Adding a workspace: a coordination session makes it, as one starts a run (#60)
+
+    def action_add_workspace(self) -> None:
+        if self.static or not self.coordinator:
+            self.set_message("workspace", "add workspace: needs --coordinator")
+            return
+        self.finding, self.adding = None, True
+        box = self.query_one("#find", Input)
+        box.border_title = "New workspace"
+        box.placeholder = "owner/name"
+        box.restrict = r"[A-Za-z0-9._/-]*"
+        box.value = ""
+        box.display = True
+        box.focus()
+
+    def add_workspace(self, repository: str) -> None:
+        if not is_repository(repository):
+            self.set_message("workspace", f"add workspace: {repository} is not owner/name")
+        elif repository in self.creating:
+            self.run_worker(self.focus_creating(repository), group="workspace", exclusive=True)
+        else:
+            self.run_worker(self.create(repository), group="workspace", exclusive=True)
+
+    async def create(self, repository: str) -> None:
+        self.set_message("workspace", f"workspace for {repository}: opening the coordination session")
+        try:
+            pane = await self.workspace_creator(self.coordinator, repository)
+        except StartError as e:
+            self.set_message("workspace", f"add workspace: {e}")
+            return
+        self.creating[repository] = pane
+        self.set_message("workspace", f"workspace for {repository}: coordination session in {pane}")
+
+    async def focus_creating(self, repository: str) -> None:
+        pane = self.creating[repository]
+        try:
+            await self.focuser(pane)
+        except FocusError as e:
+            del self.creating[repository]
+            self.set_message("workspace", f"workspace for {repository}: {pane}: {e}; press w to open it again")
+            return
+        self.set_message("workspace", f"workspace for {repository}: coordination session in {pane}")
+
     # Closing the coordination session of a finished issue
 
     def check_windows(self) -> None:
@@ -725,8 +782,9 @@ class IdeApp(App):
         if self.static or group is None or not group.repository:
             self.set_message("find", "find: no repository to look in")
             return
-        self.finding = group.repository
+        self.finding, self.adding = group.repository, False
         box = self.query_one("#find", Input)
+        box.border_title = ""
         box.placeholder = f"#number in {group.name}"
         box.restrict = r"[0-9]*"
         box.value = ""
@@ -746,11 +804,17 @@ class IdeApp(App):
             self.set_message("find", "")
 
     def end_find(self) -> None:
-        self.finding = None
+        self.finding, self.adding = None, False
         self.query_one("#find", Input).display = False
         self.query_one("#issues", DataTable).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "find" and self.adding:
+            text = event.value.strip()
+            self.end_find()
+            if text:
+                self.add_workspace(text)
+            return
         if event.input.id != "find" or self.finding is None:
             return
         repository, text = self.finding, event.value.strip()

@@ -1,4 +1,4 @@
-from textual.widgets import DataTable, Static
+from textual.widgets import DataTable, Input, Static
 
 from autoflow_ide.app import IdeApp
 from autoflow_ide.model import Issue, Run, Session, Step
@@ -1367,3 +1367,82 @@ async def test_info_shows_the_base_and_where_it_was_set_read_again_with_the_issu
         await settle(app, pilot)
         assert base_line(app) == "base      no /c/tools/config.py"
         assert asked == ["/c"] * 4
+
+
+# Adding a workspace through a coordination session (#60)
+
+async def test_w_asks_a_coordination_session_for_a_workspace_and_shows_it_unfolded_when_made():
+    from autoflow_ide.focus import FocusError
+
+    made = []
+    workspaces = list(EVERY)
+    created, focused = [], []
+
+    async def read_workspaces(coordinator):
+        return workspaces
+
+    async def loader(repository, limit):
+        return [Issue(1, "first")] if repository == "Munsik-Park/new" else [Issue(4, "four")]
+
+    async def runs(coordinator):
+        return []
+
+    async def creator(coordinator, repository):
+        created.append((coordinator, repository))
+        return "%9"
+
+    async def focuser(pane):
+        focused.append(pane)
+        if len(focused) > 1:
+            raise FocusError("can't find pane")
+
+    state = Path(tempfile.mkdtemp()) / "state.json"
+    state.write_text(json.dumps({"recent": []}))
+    app = IdeApp(coordinator="/c", loader=loader, run_loader=runs, workspaces_reader=read_workspaces,
+                 state_file=state, workspace_creator=creator, focuser=focuser)
+    async with app.run_test(size=(124, 36)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("w", *"Munsik-Park/new", "enter")
+        await settle(app, pilot)
+        assert created == [("/c", "Munsik-Park/new")]
+        assert "workspace for Munsik-Park/new: coordination session in %9" in app.messages["workspace"]
+        assert app.query_one("#issues", DataTable).has_focus                   # the box closed
+        await pilot.press("w", *"Munsik-Park/new", "enter")                    # again: back to that session
+        await settle(app, pilot)
+        assert created == [("/c", "Munsik-Park/new")] and focused == ["%9"]
+        await pilot.press("w", *"Munsik-Park/new", "enter")                    # its pane is gone
+        await settle(app, pilot)
+        assert "press w to open it again" in app.messages["workspace"]
+        await pilot.press("w", *"Munsik-Park/new", "enter")
+        await settle(app, pilot)
+        assert len(created) == 2
+        workspaces.append(WorkspaceEntry("new", "Munsik-Park/new", "~/n", "main"))   # the session wrote it
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert "Munsik-Park/new" not in app.folded and app.creating == {}
+        assert json.loads(state.read_text())["recent"][0] == "new"
+        assert "Munsik-Park/new#1" in keys(app.query_one("#issues", DataTable))
+
+
+async def test_w_opens_nothing_for_a_name_that_is_not_owner_slash_name_or_a_workspace_that_exists():
+    from autoflow_ide.start import StartError
+
+    created = []
+
+    async def creator(coordinator, repository):
+        created.append(repository)
+        raise StartError(f"{repository} already has a workspace: autoflow-sandbox")
+
+    app = every_app(workspace_creator=creator)
+    async with app.run_test(size=(124, 36)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("w", *"autoflow", "enter")
+        await settle(app, pilot)
+        assert created == [] and app.messages["workspace"] == "add workspace: autoflow is not owner/name"
+        await pilot.press("w", *"Munsik-Park/autoflow-sandbox", "enter")
+        await settle(app, pilot)
+        assert app.messages["workspace"] == "add workspace: Munsik-Park/autoflow-sandbox already has a workspace: autoflow-sandbox"
+        assert app.creating == {}
+        await pilot.press("w", "a", "escape")                                 # Esc closes the box, opens nothing
+        await settle(app, pilot)
+        assert not app.query_one("#find", Input).display and len(created) == 1
