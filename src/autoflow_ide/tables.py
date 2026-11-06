@@ -1,6 +1,6 @@
 """Tables whose columns fit the pane: fixed columns keep their width, one column takes the rest, and a
 cell longer than its column ends with an ellipsis instead of widening the table."""
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 from rich.text import Text
 from textual.widgets import DataTable
@@ -17,13 +17,16 @@ def flex_width(total: int, columns: Sequence[ColumnSpec], padding: int) -> int:
     return max(total - SCROLLBAR - fixed - 2 * padding * len(columns), MIN_FLEX)
 
 
-def cell(value: str, width: int) -> Text:
-    text = Text(value, no_wrap=True)
+def cell(value: Union[str, Text], width: int) -> Text:
+    """`value` cut to `width` with an ellipsis; a Text keeps its style."""
+    text = value.copy() if isinstance(value, Text) else Text(value)
+    text.no_wrap = True
     text.truncate(width, overflow="ellipsis")
     return text
 
 
-def fill(table: DataTable, columns: Sequence[ColumnSpec], rows: Iterable[Tuple[Optional[str], List[str]]]) -> None:
+def fill(table: DataTable, columns: Sequence[ColumnSpec],
+         rows: Iterable[Tuple[Optional[str], List[Union[str, Text]]]]) -> None:
     """Rebuild `table` with `columns` sized to its current width and `rows` of (key, cells)."""
     flex = flex_width(table.size.width, columns, table.cell_padding)
     widths = [flex if w is None else w for _, _, w in columns]

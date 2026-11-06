@@ -892,3 +892,140 @@ async def test_the_ide_version_is_in_the_bottom_right_corner():
     async with app.run_test() as pilot:
         await pilot.pause()
         assert not app.query_one("#sessions-pane").border_subtitle
+
+
+# Every workspace of the base (#44)
+
+from autoflow_ide.app import RUN_MARK
+from autoflow_ide.start import Workspace as WorkspaceEntry
+
+EVERY = [WorkspaceEntry("autoflow-coordinator", "Munsik-Park/autoflow-coordinator", "~/c", "main"),
+         WorkspaceEntry("autoflow-sandbox", "Munsik-Park/autoflow-sandbox", "~/s", "main"),
+         WorkspaceEntry("gone", "Munsik-Park/gone", None, None)]
+
+
+def every_app(runs=(), **kw):
+    async def workspaces(coordinator):
+        return EVERY
+
+    async def loader(repository, limit):
+        assert limit == 5
+        if repository == "Munsik-Park/gone":
+            raise IssueSourceError("Could not resolve to a Repository")
+        if repository == "Munsik-Park/autoflow-coordinator":
+            return [Issue(67, "instructions"), Issue(24, "abnormal states")]
+        return [Issue(4, "four"), Issue(3, "three")]
+
+    async def run_loader(coordinator):
+        return list(runs)
+
+    return IdeApp(coordinator="/c", loader=loader, run_loader=run_loader, workspaces_reader=workspaces, **kw)
+
+
+def keys(table):
+    return [table.coordinate_to_cell_key((n, 0)).row_key.value for n in range(table.row_count)]
+
+
+SANDBOX_3 = Run("autoflow-sandbox-3-k", [Step("analysis", "pass", "pass")], [Session("S1", "working")], issue="3")
+COORD_3 = Run("autoflow-coordinator-3-k", [Step("review", "running")], issue="3")
+
+
+async def test_every_workspace_under_its_row_with_its_runs():
+    app = every_app(runs=[SANDBOX_3])
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        assert keys(issues) == ["Munsik-Park/autoflow-coordinator", "Munsik-Park/autoflow-coordinator#67",
+                                "Munsik-Park/autoflow-coordinator#24", "Munsik-Park/autoflow-sandbox",
+                                "Munsik-Park/autoflow-sandbox#3", "Munsik-Park/autoflow-sandbox#4",
+                                "Munsik-Park/gone"]
+        # The run's issue first in its workspace, marked; the same number in another repository is not.
+        assert str(issues.get_cell("Munsik-Park/autoflow-sandbox#3", "run")) == RUN_MARK
+        # The pane is narrow: the workspace's row starts with its name and why its issues could not be read.
+        assert str(issues.get_cell("Munsik-Park/gone", "title")).startswith("gone: Could not reso")
+        assert "1 active runs" in status(app)
+        assert "gone: Could not resolve" in status(app)
+
+
+async def test_every_workspace_tells_the_same_number_apart():
+    app = every_app(runs=[COORD_3])
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        # Issue 3 of the coordinator is not in its open list: a row for its run, first in its workspace.
+        assert keys(issues)[1:4] == ["Munsik-Park/autoflow-coordinator#3", "Munsik-Park/autoflow-coordinator#67",
+                                     "Munsik-Park/autoflow-coordinator#24"]
+        assert str(issues.get_cell("Munsik-Park/autoflow-sandbox#3", "run")) == ""
+
+
+async def test_a_workspace_row_shows_no_run_and_its_workspace():
+    app = every_app(runs=[SANDBOX_3])
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox"))
+        await pilot.pause()
+        assert app.current is None
+        assert app.query_one("#run", DataTable).row_count == 0
+        info = str(app.query_one("#info", Static).render())
+        assert "Munsik-Park/autoflow-sandbox" in info and "autoflow-sandbox" in info
+        await pilot.press("s")      # nothing to start on a workspace row
+        await settle(app, pilot)
+        assert "start" not in app.messages or not app.messages["start"]
+        app.refresh_runs()          # a refresh keeps the cursor on the row
+        await settle(app, pilot)
+        assert keys(issues)[issues.cursor_row] == "Munsik-Park/autoflow-sandbox"
+        await pilot.press("down")
+        assert app.current.number == 3 and app.current.repository == "Munsik-Park/autoflow-sandbox"
+        assert app.query_one("#run", DataTable).row_count == 1
+
+
+async def test_s_starts_the_issue_of_its_own_repository():
+    started = []
+
+    async def starter(coordinator, repository, number):
+        started.append((repository, number))
+        return "%9"
+
+    app = every_app(starter=starter)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox#4"))
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert started == [("Munsik-Park/autoflow-sandbox", 4)]
+        assert "autoflow-sandbox#4: coordination session in %9" in status(app)
+
+
+class EveryWindows(FakeWindows):
+    def __init__(self, windows):
+        super().__init__([])
+        self.open = windows
+
+    async def find(self, workspace):
+        return {n: w for (ws, n), w in self.open.items() if ws == workspace}
+
+    async def screen(self, window):
+        return "still"
+
+    async def close(self, window):
+        self.closed.append(window.name)
+        self.open = {k: w for k, w in self.open.items() if w is not window}
+
+
+async def test_closes_finished_windows_in_every_workspace():
+    windows = EveryWindows({("autoflow-sandbox", 9): Window("@1", "autoflow-sandbox#9", ["%1"]),
+                            ("autoflow-coordinator", 9): Window("@2", "autoflow-coordinator#9", ["%2"]),
+                            ("autoflow-coordinator", 67): Window("@3", "autoflow-coordinator#67", ["%3"])})
+
+    async def lookup(repository, number):
+        return Issue(number, "x", state="closed" if repository.endswith("sandbox") else "open")
+
+    app = every_app(windows=windows, lookup=lookup, window_check_sec=0.05, window_idle_sec=0.2)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.pause(0.5)
+        await settle(app, pilot)
+        # Sandbox #9 is closed; coordinator #9 is open on GitHub and #67 is in its open list.
+        assert windows.closed == ["autoflow-sandbox#9"]
