@@ -6,6 +6,7 @@ from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
+from rich.cells import cell_len
 from rich.text import Text
 from textual.widgets import DataTable, Footer, Static
 
@@ -502,8 +503,9 @@ class IdeApp(App):
     def render_info(self) -> None:
         """Whose work the selected issue is and where it happens, above its run."""
         run = self.current.run if self.current else None
-        self.query_one("#info", Static).update(info_text(info_lines(
-            self.repository, self.workspace_entry, self.workspace_error, run, self.places)))
+        info = self.query_one("#info", Static)
+        info.update(info_text(info_lines(self.repository, self.workspace_entry, self.workspace_error, run, self.places),
+                              info.content_size.width))
 
     # Status line
 
@@ -557,14 +559,36 @@ def info_lines(repository: Optional[str], workspace: Optional[Workspace], worksp
     return lines
 
 
-def info_text(lines: List[Tuple[str, str]]) -> Text:
+# Lines whose end tells one run or place from another (a run's key, the run's folder name, the base branch): cut
+# at their start when too long. The others are cut at their end.
+KEEP_END = ("run", "clone", "worktree", "records")
+
+
+def info_text(lines: List[Tuple[str, str]], width: int = 0) -> Text:
+    """The info as text `width` cells wide (0: not known yet, nothing cut here)."""
     text = Text(no_wrap=True, overflow="ellipsis")
+    room = width - INFO_LABEL_WIDTH
     for n, (label, value) in enumerate(lines):
         if n:
             text.append("\n")
         text.append(label.ljust(INFO_LABEL_WIDTH), style="dim")
-        text.append(value)
+        text.append(keep_end(value, room) if label in KEEP_END and width > 0 else value)
     return text
+
+
+def keep_end(value: str, room: int) -> str:
+    """`value` cut at its start to `room` cells, an ellipsis in front, when it is longer."""
+    if cell_len(value) <= room:
+        return value
+    if room < 2:
+        return "…"[:max(room, 0)]
+    kept, used = [], 1
+    for char in reversed(value):
+        used += cell_len(char)
+        if used > room:
+            break
+        kept.append(char)
+    return "…" + "".join(reversed(kept))
 
 
 def issue_title(issue: Issue) -> str:

@@ -802,3 +802,43 @@ async def test_info_above_the_run_shows_the_workspace_and_where_the_run_is():
             await app.workers.wait_for_complete()
             await pilot.pause()
         assert "workspace no workspace for owner/repo in /base" in str(app.query_one("#info", Static).render())
+
+
+# A long run name or path keeps its end in view (#36)
+
+from autoflow_ide.app import info_text, keep_end
+
+
+def test_keep_end():
+    assert keep_end("short", 10) == "short"
+    assert keep_end("abcdefghij", 6) == "…fghij"
+    assert keep_end("가나다라", 5) == "…다라"                      # two cells a character
+    assert keep_end("abc", 1) == "…"
+
+
+def test_info_cuts_run_and_paths_at_their_start_and_the_rest_at_their_end():
+    name = "autoflow-coordinator-62-2026-11-06-165619-8a269048"
+    worktree = "~/work/coordinator/autoflow-coordinator/autoflow-coordinator-wt-62-2026-11-06-165619-8a269048"
+    workflow = "a-workflow-name-that-is-much-longer-than-the-room"
+    run, tree, flow = info_text([("run", name), ("worktree", worktree), ("workflow", workflow)], 40).plain.splitlines()
+    assert run == "run       …" + name[-29:] and tree == "worktree  …" + worktree[-29:]
+    assert flow == "workflow  " + workflow                     # cut at its end by the widget, as before
+    assert info_text([("run", name)]).plain == "run       " + name   # width not known yet: nothing cut
+
+
+async def test_info_keeps_the_end_of_the_worktree_at_121_columns():
+    run = Run("autoflow-coordinator-62-2026-11-06-165619-8a269048", [Step("x", "running")], issue="62",
+              checkout="/nowhere/coordinator/autoflow-coordinator/autoflow-coordinator-wt-62-2026-11-06-165619-8a269048")
+
+    async def loader(repository):
+        return [Issue(62, "sixty-two")]
+
+    async def runs(coordinator):
+        return [run]
+
+    app = IdeApp(repository="Munsik-Park/autoflow-coordinator", loader=loader, coordinator="/c", run_loader=runs)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        lines = str(app.query_one("#info", Static).render()).splitlines()
+        assert next(l for l in lines if l.startswith("worktree")).rstrip().endswith("165619-8a269048")
+        assert next(l for l in lines if l.startswith("run")).rstrip().endswith("165619-8a269048")
