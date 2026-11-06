@@ -61,6 +61,9 @@ class Run:
     reference: Optional[str] = None
     # the coordination session's surface (a tmux pane id), when run.env records it
     coordination: Optional[str] = None
+    # the run's worktree and its record folder, as run.env writes them (from coordinator v0.7.0-rc6)
+    checkout: Optional[str] = None
+    records: Optional[str] = None
 
 
 @dataclass
