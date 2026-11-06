@@ -77,6 +77,8 @@ class Issue:
     run: Optional[Run] = None
     # "open" or "closed" as GitHub gives it; None while an issue missing from the open list is being looked up.
     state: Optional[str] = "open"
+    # The repository (owner/name) it belongs to, set when the IDE lists it.
+    repository: Optional[str] = None
 
     @property
     def closed(self) -> bool:

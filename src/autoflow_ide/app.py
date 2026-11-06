@@ -1,7 +1,8 @@
 """The IDE screen: issues, the selected issue's run, and its sessions."""
 import argparse
 import time
-from typing import Awaitable, Callable, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Awaitable, Callable, Dict, List, Optional, Tuple, Union
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -12,13 +13,14 @@ from textual.widgets import DataTable, Footer, Static
 
 from autoflow_ide.detail import StepDetail, home_short
 from autoflow_ide.focus import FocusError, focus_surface
-from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repository_from_workspace
+from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repository_from_workspace, workspace_issues
 from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
-from autoflow_ide.start import StartError, Workspace, coordinator_workspace, coordinator_workspace_entry, start_run
+from autoflow_ide.start import (StartError, Workspace, coordinator_workspace, coordinator_workspace_entry,
+                               coordinator_workspaces, start_run)
 from autoflow_ide.tables import ColumnSpec, fill
 from autoflow_ide.version import ide_version
-from autoflow_ide.windows import TmuxWindows, WindowError, pane_places
+from autoflow_ide.windows import TmuxWindows, Window, WindowError, pane_places
 
 IssueLoader = Callable[[str], Awaitable[List[Issue]]]
 WorkspaceFinder = Callable[[str, str], Awaitable[str]]
@@ -28,6 +30,9 @@ Focuser = Callable[[str], Awaitable[None]]
 Starter = Callable[[str, str, int], Awaitable[str]]
 WorkspaceReader = Callable[[str, str], Awaitable[Workspace]]
 Placer = Callable[[], Awaitable[Dict[str, str]]]
+WorkspacesReader = Callable[[str], Awaitable[List[Workspace]]]
+# An issue by its repository (owner/name) and number: numbers alone repeat across repositories.
+IssueKey = Tuple[str, int]
 RUN_REFRESH_SEC = 5.0
 # The open issues are also read again on this interval, so an issue a merge closed leaves the list without a
 # key press (about 60 gh calls an hour), and when a step changes (see show_runs).
@@ -40,9 +45,41 @@ WINDOW_CHECK_SEC = 15.0
 WINDOW_IDLE_SEC = 300.0
 RUN_MARK = "●"
 ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("#", "number", 4), ("Title", "title", None)]
+# For every workspace, the number goes with the title, so a workspace's name has the room of both.
+EVERY_ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("Issue", "title", None)]
+WORKSPACE_MARK = "▾"
 RUN_COLUMNS: List[ColumnSpec] = [("Step", "step", 4), ("Module run", "name", None), ("Session", "session", 7),
                                  ("State", "state", 8), ("Verdict", "verdict", 16)]
 SESSION_COLUMNS: List[ColumnSpec] = [("Session", "name", 7), ("State", "state", None)]
+
+
+def issue_key(issue: Issue) -> IssueKey:
+    return (issue.repository or "", issue.number)
+
+
+@dataclass
+class Group:
+    """The issues of one repository, under its workspace."""
+    repository: str
+    # Its workspace (repo.json), when read; why it could not be, for the one repository.
+    workspace: Optional[Workspace] = None
+    workspace_error: Optional[str] = None
+    # The open issues as listed, and those with the runs attached plus a row per run whose issue is not listed.
+    open_issues: List[Issue] = field(default_factory=list)
+    issues: List[Issue] = field(default_factory=list)
+    # Whether its open issues have been read: until then, an issue with a run cannot be told to be missing.
+    listed: bool = False
+    # Why its open issues could not be read, the last time.
+    error: Optional[str] = None
+
+    @property
+    def name(self) -> str:
+        return self.workspace.name if self.workspace else self.repository
+
+
+def group_title(group: Group) -> str:
+    """The row of a workspace in the issues pane."""
+    return f"{group.name}: {group.error}" if group.error else group.name
 
 
 class IdeApp(App):
@@ -65,37 +102,44 @@ class IdeApp(App):
                  windows=None, workspace_finder: Optional[WorkspaceFinder] = None,
                  window_check_sec: float = WINDOW_CHECK_SEC, window_idle_sec: float = WINDOW_IDLE_SEC,
                  workspace_reader: Optional[WorkspaceReader] = None, placer: Optional[Placer] = None,
-                 version: Optional[str] = None):
+                 version: Optional[str] = None, workspaces_reader: Optional[WorkspacesReader] = None):
         """With `issues`, show them as given. Otherwise load the open issues of `repository` with `loader`,
-        again every `issue_refresh_sec` seconds.
+        again every `issue_refresh_sec` seconds; without `repository` but with `coordinator`, the most recent
+        open issues of every workspace of the coordinator's base (`workspaces_reader`), under a row per workspace.
         With `coordinator` (a coordinator clone), read its active runs every `run_refresh_sec` seconds.
         An issue that has a run but is not in the open list is looked up with `lookup`.
         `starter` opens the coordination session for an issue (see start.py); `windows` finds and closes those
-        sessions' windows (see windows.py) in the workspace `workspace_finder` names.
+        sessions' windows (see windows.py) in the workspace `workspace_finder` names, or in every workspace.
         `workspace_reader` reads that workspace's repo.json and `placer` where each tmux pane is, both shown
         above the run pane.
         `version`, the IDE's own (see version.py), is shown in the bottom-right corner."""
         super().__init__()
         self.version = version
-        self.open_issues: List[Issue] = list(issues) if issues is not None else []
-        self.issues: List[Issue] = list(self.open_issues)
         self.static = issues is not None
-        # Until the open issues have been read, an issue with a run cannot be told to be missing from them.
-        self.listed = self.static
-        self.lookup = lookup or gh_issue
-        # Issues missing from the open list, by number: the looked-up issue, or None while looking or after a
-        # failure (looked up again on the next refresh of the issues).
-        self.lookups: Dict[int, Optional[Issue]] = {}
-        # Titles of the issues seen in the open list, shown for an issue that left it until it is looked up.
-        self.titles: Dict[int, str] = {}
         self.repository = repository
-        self.loader = loader or gh_issues
         self.coordinator = coordinator
+        # Every workspace of the base, instead of one repository.
+        self.every = not self.static and repository is None and coordinator is not None
+        # Titles of the issues seen in the open list, shown for an issue that left it until it is looked up.
+        self.titles: Dict[IssueKey, str] = {}
+        self.groups: List[Group] = []
+        if self.static:
+            group = Group(repository or "", listed=True)
+            self.groups.append(group)
+            self.stamp(group, list(issues))
+        elif repository:
+            self.groups.append(Group(repository))
+        self.workspaces_reader = workspaces_reader or coordinator_workspaces
+        self.lookup = lookup or gh_issue
+        # Issues missing from the open list, by (repository, number): the looked-up issue, or None while looking
+        # or after a failure (looked up again on the next refresh of the issues).
+        self.lookups: Dict[IssueKey, Optional[Issue]] = {}
+        self.loader = loader or gh_issues
         self.run_loader = run_loader or coordinator_runs
         self.focuser = focuser or focus_surface
         self.starter = starter or start_run
         # Coordination sessions opened from this IDE, by issue: their pane, until the issue has a run.
-        self.started: Dict[int, str] = {}
+        self.started: Dict[IssueKey, str] = {}
         self.run_refresh_sec = run_refresh_sec
         self.issue_refresh_sec = issue_refresh_sec
         self.runs: List[Run] = []
@@ -105,21 +149,21 @@ class IdeApp(App):
         self.workspace_finder = workspace_finder or coordinator_workspace
         self.window_check_sec = window_check_sec
         self.window_idle_sec = window_idle_sec
+        # The workspace of the one repository, by name, as workspace_finder gave it.
         self.workspace: Optional[str] = None
         self.workspace_reader = workspace_reader or coordinator_workspace_entry
-        # The workspace of the repository, or why it could not be read; None until read.
-        self.workspace_entry: Optional[Workspace] = None
-        self.workspace_error: Optional[str] = None
         self.placer = placer or pane_places
         # Where each tmux pane is ("2:1 autoflow-coordinator#59"), by pane id, as last read.
         self.places: Dict[str, str] = {}
-        # The coordination session windows, by issue: (window id, its screen, when that screen was first seen).
-        self.screens: Dict[int, Tuple[str, str, float]] = {}
+        # The coordination session windows, by (workspace, issue): (window id, its screen, when first seen).
+        self.screens: Dict[Tuple[str, int], Tuple[str, str, float]] = {}
         # When an issue was last looked up and found open, so it is not looked up on every check.
-        self.found_open: Dict[int, float] = {}
+        self.found_open: Dict[IssueKey, float] = {}
         # The steps of each shown run, by run name, as last read: what a step change is compared against.
         self.step_marks: Dict[str, List[Tuple[str, str, Optional[str]]]] = {}
         self.current: Optional[Issue] = None
+        # The repository of the workspace row the cursor is on, when it is on one.
+        self.on_header: Optional[str] = None
         self.messages: Dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
@@ -141,7 +185,7 @@ class IdeApp(App):
 
     def on_mount(self) -> None:
         self.query_one("#issues", DataTable).focus()
-        self.set_issues(self.issues)
+        self.show_issues()
         if not self.static:
             self.action_refresh_issues()
             self.set_interval(self.issue_refresh_sec, self.action_refresh_issues)
@@ -151,7 +195,7 @@ class IdeApp(App):
                 self.run_worker(self.load_workspace(), group="workspace")
             self.refresh_runs()
             self.set_interval(self.run_refresh_sec, self.refresh_runs)
-            if not self.static and self.repository:
+            if not self.static and (self.repository or self.every):
                 self.set_interval(self.window_check_sec, self.check_windows)
         self.call_after_refresh(self.render_all)
 
@@ -162,43 +206,89 @@ class IdeApp(App):
         self.render_issues()
         self.show_issue(self.current)
 
-    # Issues
+    # Issues, in groups by repository
+
+    @property
+    def issues(self) -> List[Issue]:
+        return [i for g in self.groups for i in g.issues]
+
+    @property
+    def open_issues(self) -> List[Issue]:
+        return [i for g in self.groups for i in g.open_issues]
+
+    def group_of(self, repository: Optional[str]) -> Optional[Group]:
+        return next((g for g in self.groups if g.repository == repository), None)
+
+    def stamp(self, group: Group, issues: List[Issue]) -> None:
+        """Make `issues` the open issues of `group`."""
+        for issue in issues:
+            issue.repository = group.repository
+        group.open_issues = issues
+        self.titles.update(((group.repository, i.number), i.title) for i in issues)
 
     def set_issues(self, issues: List[Issue]) -> None:
-        """Show the open `issues`, with the runs attached and the issues of runs that are not among them."""
-        self.open_issues = issues
-        self.titles.update((i.number, i.title) for i in issues)
+        """Show the open `issues` of the one repository, with the runs attached and the issues of runs that are
+        not among them."""
+        if self.groups:
+            self.stamp(self.groups[0], issues)
+        self.show_issues()
+
+    def show_issues(self) -> None:
         self.attach_runs()
         self.render_issues()
-        self.show_issue(self.current_in(issues))
+        self.show_issue(self.current_in())
 
-    def current_in(self, issues: List[Issue]) -> Optional[Issue]:
-        """The highlighted issue if it is still listed, otherwise the first one in display order."""
-        number = self.current.number if self.current else None
+    def row_key(self, issue: Issue) -> str:
+        return f"{issue.repository}#{issue.number}" if self.every else str(issue.number)
+
+    def label(self, key: IssueKey) -> str:
+        """How an issue is named in a message: its number, with its repository's name for every workspace."""
+        return f"{key[0].split('/')[-1]}#{key[1]}" if self.every else f"#{key[1]}"
+
+    def current_in(self) -> Optional[Issue]:
+        """The highlighted issue if it is still listed, otherwise the first one in display order; none while the
+        cursor is on a workspace row."""
+        if self.on_header is not None and self.group_of(self.on_header):
+            return None
+        key = issue_key(self.current) if self.current else None
         ordered = self.ordered()
-        return next((i for i in ordered if i.number == number), ordered[0] if ordered else None)
+        return next((i for i in ordered if issue_key(i) == key), ordered[0] if ordered else None)
 
     def ordered(self) -> List[Issue]:
-        """Issues with a run first, each group in the order the source gave."""
-        return sorted(self.issues, key=lambda i: i.run is None)
+        """Issues in their groups, those with a run first in each, each part in the order the source gave."""
+        return [i for g in self.groups for i in sorted(g.issues, key=lambda i: i.run is None)]
 
     def render_issues(self) -> None:
         table = self.query_one("#issues", DataTable)
-        ordered = self.ordered()
-        fill(table, ISSUE_COLUMNS,
-             ((str(i.number), [RUN_MARK if i.run else "", str(i.number), issue_title(i)]) for i in ordered))
-        current = self.current_in(ordered)
+        rows: List[Tuple[Optional[str], List[Union[str, Text]]]] = []
+        for group in self.groups:
+            issues = sorted(group.issues, key=lambda i: i.run is None)
+            if self.every:
+                rows.append((group.repository, [WORKSPACE_MARK, Text(group_title(group), style="bold")]))
+                rows += [(self.row_key(i), [RUN_MARK if i.run else "", f"{i.number}  {issue_title(i)}"])
+                         for i in issues]
+            else:
+                rows += [(self.row_key(i), [RUN_MARK if i.run else "", str(i.number), issue_title(i)]) for i in issues]
+        fill(table, EVERY_ISSUE_COLUMNS if self.every else ISSUE_COLUMNS, rows)
+        current = self.current_in()
         if current:
-            table.move_cursor(row=table.get_row_index(str(current.number)))
+            table.move_cursor(row=table.get_row_index(self.row_key(current)))
+        elif self.on_header is not None and self.group_of(self.on_header):
+            table.move_cursor(row=table.get_row_index(self.on_header))
 
     def action_refresh_issues(self) -> None:
         if self.static:
+            return
+        if self.every:
+            self.set_message("issues", "loading issues")
+            self.lookups = {k: i for k, i in self.lookups.items() if i is not None}
+            self.run_worker(self.load_every(), group="issues", exclusive=True)
             return
         if not self.repository:
             self.set_message("issues", "no repository: start with --repo owner/name or --workspace <dir>")
             return
         self.set_message("issues", "loading issues")
-        self.lookups = {n: i for n, i in self.lookups.items() if i is not None}
+        self.lookups = {k: i for k, i in self.lookups.items() if i is not None}
         self.run_worker(self.load_issues(), group="issues", exclusive=True)
 
     async def load_issues(self) -> None:
@@ -210,9 +300,44 @@ class IdeApp(App):
             message = f"{len(issues)} open issues"
         try:
             if issues is not None:
-                self.listed = True
+                self.groups[0].listed = True
                 self.set_issues(issues)
             self.set_message("issues", message)
+        except NoMatches:
+            pass  # the app is closing: its widgets are gone
+
+    async def load_every(self) -> None:
+        """Read the workspaces of the base again, then the most recent open issues of each."""
+        try:
+            workspaces = await self.workspaces_reader(self.coordinator)
+        except StartError as e:
+            self.set_message("issues", f"workspaces: {e}")
+            return
+        groups: List[Group] = []
+        for workspace in workspaces:
+            if any(g.repository == workspace.github for g in groups):
+                continue  # a second workspace of the same repository: the coordinator cannot tell them apart
+            group = self.group_of(workspace.github) or Group(workspace.github)
+            group.workspace = workspace
+            groups.append(group)
+        found = await workspace_issues([g.repository for g in groups], loader=self.loader)
+        failed = []
+        for group in groups:
+            result = found[group.repository]
+            if isinstance(result, IssueSourceError):
+                group.error = str(result)
+                failed.append(f"{group.name}: {result}")
+            else:
+                group.error = None
+                group.listed = True
+                self.stamp(group, result)
+        try:
+            self.groups = groups
+            self.show_issues()
+            if self.runs_read:
+                self.count_runs()  # the runs read before the workspaces were known
+            self.set_message("issues", "; ".join(failed) if failed
+                             else f"{len(self.open_issues)} recent open issues in {len(groups)} workspaces")
         except NoMatches:
             pass  # the app is closing: its widgets are gone
 
@@ -248,37 +373,42 @@ class IdeApp(App):
         except NoMatches:
             pass  # the app is closing: its widgets are gone
 
-    # The workspace
+    # The workspace of the one repository
 
     async def load_workspace(self) -> None:
+        group = self.groups[0]
         try:
-            self.workspace_entry = await self.workspace_reader(self.coordinator, self.repository)
+            group.workspace = await self.workspace_reader(self.coordinator, self.repository)
         except StartError as e:
-            self.workspace_error = str(e)
+            group.workspace_error = str(e)
         try:
             self.render_info()
         except NoMatches:
             pass  # the app is closing: its widgets are gone
 
     def show_runs(self, runs: List[Run]) -> None:
-        before = {i.number for i in self.issues if i.run}
+        before = {issue_key(i) for i in self.issues if i.run}
         self.runs = runs
         self.attach_runs()
-        after = {i.number for i in self.issues if i.run}
+        after = {issue_key(i) for i in self.issues if i.run}
         started = after - before
-        if any(self.started.pop(n, None) for n in after):
+        if any(self.started.pop(k, None) for k in after):
             self.set_message("start", "")  # the coordination session prepared the run
         if started and (self.current is None or self.current.run is None):
             # The operator is not looking at a run: move to the issue whose run just started.
-            self.current = next(i for i in self.ordered() if i.number in started)
+            self.on_header = None
+            self.current = next(i for i in self.ordered() if issue_key(i) in started)
         self.render_issues()
-        self.show_issue(self.current_in(self.issues))
-        own = len(self.own_runs())
-        others = len(runs) - own
-        self.set_message("runs", f"{own} active runs" + (f" ({others} in other repositories)" if others else ""))
+        self.show_issue(self.current_in())
+        self.count_runs()
         if before - after or self.steps_changed():
             # A run ended, or a step of a run changed: a merge may have closed an issue in the meantime.
             self.action_refresh_issues()
+
+    def count_runs(self) -> None:
+        own = len(self.own_runs())
+        others = len(self.runs) - own
+        self.set_message("runs", f"{own} active runs" + (f" ({others} in other repositories)" if others else ""))
 
     def steps_changed(self) -> bool:
         """Whether a step of a run already shown changed its state or verdict, or a step was added, since the
@@ -289,58 +419,67 @@ class IdeApp(App):
         self.step_marks = marks
         return changed
 
+    def run_repository(self, run: Run) -> Optional[str]:
+        """The shown repository `run` belongs to. status.py lists the active runs of every repository; the
+        coordinator names a run <repository name>-<issue>-<key>."""
+        if not run.issue:
+            return None
+        return next((g.repository for g in self.groups
+                     if g.repository and run.name.startswith(f"{g.repository.split('/')[-1]}-{run.issue}-")), None)
+
     def own_runs(self) -> List[Run]:
-        """The runs of this repository. status.py lists the active runs of every repository; the coordinator
-        names a run <repository name>-<issue>-<key>."""
-        if not self.repository:
-            return []
-        name = self.repository.split("/")[-1]
-        return [r for r in self.runs if r.issue and r.name.startswith(f"{name}-{r.issue}-")]
+        """The runs of the shown repositories."""
+        return [r for r in self.runs if self.run_repository(r)]
 
     def attach_runs(self) -> None:
         """Each issue gets the first of its runs; status.py lists the most recently changed run first.
         A run stays active after its issue closes (a merge closes it) until the coordination session closes
         the run, so a run whose issue is not in the open list adds a row for that issue after the open ones."""
-        issues = list(self.open_issues)
-        if self.coordinator:
-            runs = self.own_runs()
+        if not self.coordinator:
+            for group in self.groups:
+                group.issues = list(group.open_issues)
+            return
+        for group in self.groups:
+            issues = list(group.open_issues)
+            runs = [r for r in self.runs if self.run_repository(r) == group.repository]
             for issue in issues:
                 issue.run = next((r for r in runs if r.issue == str(issue.number)), None)
-            if self.listed:
+            if group.listed:
                 shown = {i.number for i in issues}
                 for run in runs:
                     if not run.issue.isdigit() or int(run.issue) in shown:
                         continue
                     number = int(run.issue)
                     shown.add(number)
-                    issues.append(self.missing_issue(number, run))
-        self.issues = issues
+                    issues.append(self.missing_issue((group.repository, number), run))
+            group.issues = issues
 
-    def missing_issue(self, number: int, run: Run) -> Issue:
-        """The row for issue `number`, which has `run` but is not in the open list."""
-        found = self.lookups.get(number)
+    def missing_issue(self, key: IssueKey, run: Run) -> Issue:
+        """The row for issue `key`, which has `run` but is not in the open list."""
+        repository, number = key
+        found = self.lookups.get(key)
         if found is not None:
-            return Issue(number, found.title, run, found.state)
-        self.look_up(number)
-        return Issue(number, self.titles.get(number, ""), run, None)
+            return Issue(number, found.title, run, found.state, repository)
+        self.look_up(key)
+        return Issue(number, self.titles.get(key, ""), run, None, repository)
 
-    def look_up(self, number: int) -> None:
-        if number in self.lookups or self.static or not self.repository:
+    def look_up(self, key: IssueKey) -> None:
+        if key in self.lookups or self.static or not key[0]:
             return
-        self.lookups[number] = None
-        self.run_worker(self.load_issue(number), group=f"issue-{number}")
+        self.lookups[key] = None
+        self.run_worker(self.load_issue(key), group=f"issue-{key[0]}-{key[1]}")
 
-    async def load_issue(self, number: int) -> None:
+    async def load_issue(self, key: IssueKey) -> None:
         try:
-            issue = await self.lookup(self.repository, number)
+            issue = await self.lookup(*key)
         except IssueSourceError as e:
-            issue, message = None, f"issue #{number}: {e}"
+            issue, message = None, f"issue {self.label(key)}: {e}"
         else:
             message = ""
         try:
             if issue is not None:
-                self.lookups[number] = issue
-                self.set_issues(self.open_issues)
+                self.lookups[key] = issue
+                self.show_issues()
             self.set_message("lookup", message)
         except NoMatches:
             pass  # the app is closing: its widgets are gone
@@ -351,37 +490,38 @@ class IdeApp(App):
         issue = self.current
         if issue is None:
             return
-        if self.static or not self.coordinator or not self.repository:
+        key = issue_key(issue)
+        if self.static or not self.coordinator or not issue.repository:
             self.set_message("start", "start: needs --coordinator and --repo or --workspace")
         elif issue.closed:
-            self.set_message("start", f"#{issue.number} is closed")
+            self.set_message("start", f"{self.label(key)} is closed")
         elif issue.run:
-            self.set_message("start", f"#{issue.number} already has a run: {issue.run.name}")
-        elif issue.number in self.started:
+            self.set_message("start", f"{self.label(key)} already has a run: {issue.run.name}")
+        elif key in self.started:
             # Opened from here, its run not prepared yet: go back to that coordination session.
-            self.run_worker(self.focus_started(issue.number), group="start", exclusive=True)
+            self.run_worker(self.focus_started(key), group="start", exclusive=True)
         else:
-            self.run_worker(self.start(issue.number), group="start", exclusive=True)
+            self.run_worker(self.start(key), group="start", exclusive=True)
 
-    async def start(self, number: int) -> None:
-        self.set_message("start", f"#{number}: opening the coordination session")
+    async def start(self, key: IssueKey) -> None:
+        self.set_message("start", f"{self.label(key)}: opening the coordination session")
         try:
-            pane = await self.starter(self.coordinator, self.repository, number)
+            pane = await self.starter(self.coordinator, *key)
         except StartError as e:
-            self.set_message("start", f"start #{number}: {e}")
+            self.set_message("start", f"start {self.label(key)}: {e}")
             return
-        self.started[number] = pane
-        self.set_message("start", f"#{number}: coordination session in {pane}")
+        self.started[key] = pane
+        self.set_message("start", f"{self.label(key)}: coordination session in {pane}")
 
-    async def focus_started(self, number: int) -> None:
-        pane = self.started[number]
+    async def focus_started(self, key: IssueKey) -> None:
+        pane = self.started[key]
         try:
             await self.focuser(pane)
         except FocusError as e:
-            del self.started[number]
-            self.set_message("start", f"#{number}: {pane}: {e}; press s to open it again")
+            del self.started[key]
+            self.set_message("start", f"{self.label(key)}: {pane}: {e}; press s to open it again")
             return
-        self.set_message("start", f"#{number}: coordination session in {pane}")
+        self.set_message("start", f"{self.label(key)}: coordination session in {pane}")
 
     # Closing the coordination session of a finished issue
 
@@ -398,52 +538,62 @@ class IdeApp(App):
         """Close the coordination session window of each issue that is closed and has no run, once its screen
         has not changed for window_idle_sec. One issue can take several runs, so an open issue keeps its
         window after a run ends; a merge closes the issue before the run ends, so a run keeps it too."""
+        found: Dict[Tuple[str, int], Tuple[str, Window]] = {}
         try:
-            if self.workspace is None:
-                self.workspace = await self.workspace_finder(self.coordinator, self.repository)
-            windows = await self.windows.find(self.workspace)
+            if self.every:
+                places = [(g.workspace.name, g.repository) for g in self.groups if g.workspace]
+            else:
+                if self.workspace is None:
+                    self.workspace = await self.workspace_finder(self.coordinator, self.repository)
+                places = [(self.workspace, self.repository)]
+            for workspace, repository in places:
+                for number, window in (await self.windows.find(workspace)).items():
+                    found[(workspace, number)] = (repository, window)
         except (StartError, WindowError) as e:
             self.set_message("windows", f"windows: {e}")
             return
         now = time.monotonic()
-        self.screens = {n: s for n, s in self.screens.items() if n in windows}
-        for number, window in windows.items():
+        self.screens = {k: s for k, s in self.screens.items() if k in found}
+        for (workspace, number), (repository, window) in found.items():
             try:
                 screen = await self.windows.screen(window)
             except WindowError as e:
                 self.set_message("windows", f"{window.name}: {e}")
                 continue
-            seen = self.screens.get(number)
+            seen = self.screens.get((workspace, number))
             if seen is None or seen[0] != window.id or seen[1] != screen:
-                self.screens[number] = seen = (window.id, screen, now)
-            if now - seen[2] < self.window_idle_sec or not await self.finished(number, now):
+                self.screens[(workspace, number)] = seen = (window.id, screen, now)
+            if now - seen[2] < self.window_idle_sec or not await self.finished((repository, number), now):
                 continue
             try:
                 await self.windows.close(window)
             except WindowError as e:
                 self.set_message("windows", f"{window.name}: {e}")
                 continue
-            del self.screens[number]
-            self.started.pop(number, None)
+            del self.screens[(workspace, number)]
+            self.started.pop((repository, number), None)
             self.set_message("windows", f"closed {window.name}: #{number} is closed and has no run")
 
-    async def finished(self, number: int, now: float) -> bool:
-        """Whether issue `number` is closed and has no active run. Closed is asked of GitHub, not taken from
+    async def finished(self, key: IssueKey, now: float) -> bool:
+        """Whether issue `key` is closed and has no active run. Closed is asked of GitHub, not taken from
         the issue missing from the open list; an issue found open is asked again after window_idle_sec."""
-        if not (self.listed and self.runs_read):
+        repository, number = key
+        group = self.group_of(repository)
+        if group is None or not (group.listed and self.runs_read):
             return False
-        if any(r.issue == str(number) for r in self.own_runs()) or any(i.number == number for i in self.open_issues):
+        if (any(r.issue == str(number) and self.run_repository(r) == repository for r in self.runs)
+                or any(i.number == number for i in group.open_issues)):
             return False
-        found_open = self.found_open.get(number)
+        found_open = self.found_open.get(key)
         if found_open is not None and now - found_open < self.window_idle_sec:
             return False
         try:
-            issue = await self.lookup(self.repository, number)
+            issue = await self.lookup(repository, number)
         except IssueSourceError as e:
-            self.set_message("windows", f"issue #{number}: {e}")
+            self.set_message("windows", f"issue {self.label(key)}: {e}")
             return False
         if not issue.closed:
-            self.found_open[number] = now
+            self.found_open[key] = now
         return issue.closed
 
     # Selection
@@ -451,8 +601,12 @@ class IdeApp(App):
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.data_table.id != "issues" or event.row_key.value is None:
             return
-        number = int(event.row_key.value)
-        self.show_issue(next((i for i in self.issues if i.number == number), None))
+        key = event.row_key.value
+        if self.every and self.group_of(key):
+            self.on_header = key
+            self.show_issue(None)
+            return
+        self.show_issue(next((i for i in self.issues if self.row_key(i) == key), None))
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if event.data_table.id == "sessions" and event.row_key.value is not None:
@@ -486,6 +640,8 @@ class IdeApp(App):
 
     def show_issue(self, issue: Optional[Issue]) -> None:
         self.current = issue
+        if issue is not None:
+            self.on_header = None
         run_table = self.query_one("#run", DataTable)
         sessions = self.query_one("#sessions", DataTable)
         run_row, session_row = run_table.cursor_row, sessions.cursor_row
@@ -508,9 +664,19 @@ class IdeApp(App):
     def render_info(self) -> None:
         """Whose work the selected issue is and where it happens, above its run."""
         run = self.current.run if self.current else None
+        group = self.current_group()
         info = self.query_one("#info", Static)
-        info.update(info_text(info_lines(self.repository, self.workspace_entry, self.workspace_error, run, self.places),
-                              info.content_size.width))
+        lines = (info_lines(group.repository, group.workspace, group.workspace_error, run, self.places) if group
+                 else info_lines(None, None, None, run, self.places))
+        info.update(info_text(lines, info.content_size.width))
+
+    def current_group(self) -> Optional[Group]:
+        """The group of the highlighted issue or workspace row; the one repository's when there is only it."""
+        if self.current is not None:
+            return self.group_of(self.current.repository)
+        if self.on_header is not None:
+            return self.group_of(self.on_header)
+        return self.groups[0] if not self.every and self.groups else None
 
     # Status line
 
@@ -520,7 +686,8 @@ class IdeApp(App):
 
     def update_status(self) -> None:
         issue, run = self.current, self.current.run if self.current else None
-        parts = [self.repository or "(no repository)",
+        group = self.current_group()
+        parts = [(group.repository if group else self.repository) or ("every workspace" if self.every else "(no repository)"),
                  (f"#{issue.number}" + (" (closed)" if issue.closed else "")) if issue else "no issue",
                  run.name if run else "no run"]
         parts += [m for m in self.messages.values() if m]
