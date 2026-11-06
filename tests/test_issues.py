@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from autoflow_ide.issues import IssueSourceError, gh_issues, parse_issue_list, repository_from_workspace
+from autoflow_ide.issues import (RECENT_ISSUES, IssueSourceError, gh_issues, parse_issue_list, repository_from_workspace,
+                                 workspace_issues)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 RECORDED = (FIXTURES / "gh-issue-list.json").read_text()
@@ -108,3 +109,25 @@ async def test_gh_issue_not_found(tmp_path, monkeypatch):
     fake_gh(tmp_path, monkeypatch, stdout=error_json, stderr="gh: Not Found (HTTP 404)\n", status=1)
     with pytest.raises(IssueSourceError, match=r"gh: Not Found \(HTTP 404\)"):
         await gh_issue("Munsik-Park/autoflow-sandbox", 999)
+
+
+async def test_workspace_issues_reads_the_recent_ones_of_each_repository(tmp_path, monkeypatch):
+    args = fake_gh(tmp_path, monkeypatch, stdout=RECORDED)
+    issues = await workspace_issues(["Munsik-Park/Autoflow-ide"])
+    assert args.read_text().split() == ["issue", "list", "--repo", "Munsik-Park/Autoflow-ide", "--state", "open",
+                                        "--limit", str(RECENT_ISSUES), "--json", "number,title"]
+    # gh lists them newest first, as recorded: the order the pane keeps.
+    assert [i.number for i in issues["Munsik-Park/Autoflow-ide"]] == [6, 5, 4, 3]
+    assert RECENT_ISSUES == 5
+
+
+async def test_workspace_issues_keeps_the_others_when_one_fails():
+    async def loader(repository, limit):
+        if repository == "owner/gone":
+            raise IssueSourceError(NO_REPO.strip())
+        return parse_issue_list(RECORDED)[:limit]
+
+    issues = await workspace_issues(["owner/a", "owner/gone", "owner/b"], loader=loader, limit=2)
+    assert list(issues) == ["owner/a", "owner/gone", "owner/b"]
+    assert [i.number for i in issues["owner/a"]] == [6, 5] and [i.number for i in issues["owner/b"]] == [6, 5]
+    assert isinstance(issues["owner/gone"], IssueSourceError) and "Could not resolve" in str(issues["owner/gone"])

@@ -53,8 +53,9 @@ class Workspace:
     base_branch: Optional[str] = None
 
 
-def find_workspace_entry(base: Path, repository: str) -> Workspace:
-    """The workspace in `base` whose repo.json has `repository` as its github value."""
+def list_workspaces(base: Path) -> List[Workspace]:
+    """Every workspace in `base`, in name order: a folder whose repo.json has a `github` value. A repo.json that
+    cannot be read, or has no `github` string, is skipped."""
     found: List[Workspace] = []
     for repo_json in sorted(base.glob("*/repo.json")):
         try:
@@ -62,10 +63,17 @@ def find_workspace_entry(base: Path, repository: str) -> Workspace:
             github = values.get("github")
         except (OSError, ValueError, AttributeError):
             continue
-        if github == repository:
-            clone, branch = values.get("clone"), values.get("base_branch")
-            found.append(Workspace(repo_json.parent.name, github, clone if isinstance(clone, str) else None,
-                                   branch if isinstance(branch, str) else None))
+        if not isinstance(github, str):
+            continue
+        clone, branch = values.get("clone"), values.get("base_branch")
+        found.append(Workspace(repo_json.parent.name, github, clone if isinstance(clone, str) else None,
+                               branch if isinstance(branch, str) else None))
+    return found
+
+
+def find_workspace_entry(base: Path, repository: str) -> Workspace:
+    """The workspace in `base` whose repo.json has `repository` as its github value."""
+    found = [w for w in list_workspaces(base) if w.github == repository]
     if not found:
         raise StartError(f"no workspace for {repository} in {base}")
     if len(found) > 1:
@@ -105,6 +113,11 @@ async def open_coordination(coordinator: str, name: str, text: str) -> str:
 async def coordinator_workspace(coordinator: str, repository: str) -> str:
     """The name of the coordinator's workspace for `repository`."""
     return find_workspace(await workspace_base(coordinator), repository)
+
+
+async def coordinator_workspaces(coordinator: str) -> List[Workspace]:
+    """Every workspace in the coordinator's base."""
+    return list_workspaces(await workspace_base(coordinator))
 
 
 async def coordinator_workspace_entry(coordinator: str, repository: str) -> Workspace:

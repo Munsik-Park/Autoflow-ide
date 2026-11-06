@@ -4,8 +4,8 @@ import stat
 
 import pytest
 
-from autoflow_ide.start import (StartError, Workspace, find_workspace, find_workspace_entry, instruction,
-                                open_coordination, start_run, workspace_base)
+from autoflow_ide.start import (StartError, Workspace, coordinator_workspaces, find_workspace, find_workspace_entry,
+                                instruction, list_workspaces, open_coordination, start_run, workspace_base)
 
 
 def fake_tmux(tmp_path, monkeypatch, fail_with=None):
@@ -64,6 +64,34 @@ def test_find_workspace_entry_reads_repo_json(tmp_path):
     assert find_workspace_entry(tmp_path, "Munsik-Park/autoflow-sandbox") == Workspace(
         "autoflow-sandbox", "Munsik-Park/autoflow-sandbox", "~/x", "main")
     assert find_workspace_entry(tmp_path, "owner/bare") == Workspace("bare", "owner/bare", None, None)
+
+
+def test_list_workspaces_in_name_order_skipping_what_is_not_one(tmp_path):
+    workspace(tmp_path, "opensre", "Munsik-Park/opensre")
+    workspace(tmp_path, "autoflow-sandbox", "Munsik-Park/autoflow-sandbox")
+    (tmp_path / "bare").mkdir()
+    (tmp_path / "bare" / "repo.json").write_text(json.dumps({"github": "owner/bare"}))
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "repo.json").write_text("not json")
+    (tmp_path / "list").mkdir()
+    (tmp_path / "list" / "repo.json").write_text("[]")
+    (tmp_path / "nogithub").mkdir()
+    (tmp_path / "nogithub" / "repo.json").write_text(json.dumps({"clone": "~/x"}))
+    (tmp_path / "records").mkdir()
+    assert list_workspaces(tmp_path) == [
+        Workspace("autoflow-sandbox", "Munsik-Park/autoflow-sandbox", "~/x", "main"),
+        Workspace("bare", "owner/bare", None, None),
+        Workspace("opensre", "Munsik-Park/opensre", "~/x", "main"),
+    ]
+    assert list_workspaces(tmp_path / "nowhere") == []
+
+
+async def test_coordinator_workspaces_are_those_of_its_base(tmp_path):
+    base = tmp_path / "base"
+    workspace(base, "autoflow-sandbox", "Munsik-Park/autoflow-sandbox")
+    workspace(base, "opensre", "Munsik-Park/opensre")
+    clone = coordinator_clone(tmp_path, base)
+    assert [w.name for w in await coordinator_workspaces(clone)] == ["autoflow-sandbox", "opensre"]
 
 
 async def test_workspace_base_from_config_py(tmp_path):
