@@ -896,6 +896,9 @@ async def test_the_ide_version_is_in_the_bottom_right_corner():
 
 # Every workspace of the base (#44)
 
+import json
+import tempfile
+
 from autoflow_ide.app import RUN_MARK
 from autoflow_ide.start import Workspace as WorkspaceEntry
 
@@ -904,7 +907,12 @@ EVERY = [WorkspaceEntry("autoflow-coordinator", "Munsik-Park/autoflow-coordinato
          WorkspaceEntry("gone", "Munsik-Park/gone", None, None)]
 
 
-def every_app(runs=(), **kw):
+def every_app(runs=(), recent=("autoflow-coordinator", "autoflow-sandbox", "gone"), state_file=None, run_loader=None,
+              **kw):
+    """Every workspace of EVERY; `recent` are the workspaces chosen recently (all of them: all unfolded)."""
+    if state_file is None:
+        state_file = Path(tempfile.mkdtemp()) / "state.json"
+        state_file.write_text(json.dumps({"recent": list(recent)}))
     async def workspaces(coordinator):
         return EVERY
 
@@ -916,10 +924,11 @@ def every_app(runs=(), **kw):
             return [Issue(67, "instructions"), Issue(24, "abnormal states")]
         return [Issue(4, "four"), Issue(3, "three")]
 
-    async def run_loader(coordinator):
+    async def given_runs(coordinator):
         return list(runs)
 
-    return IdeApp(coordinator="/c", loader=loader, run_loader=run_loader, workspaces_reader=workspaces, **kw)
+    return IdeApp(coordinator="/c", loader=loader, run_loader=run_loader or given_runs, workspaces_reader=workspaces,
+                  state_file=state_file, **kw)
 
 
 def keys(table):
@@ -1029,3 +1038,81 @@ async def test_closes_finished_windows_in_every_workspace():
         await settle(app, pilot)
         # Sandbox #9 is closed; coordinator #9 is open on GitHub and #67 is in its open list.
         assert windows.closed == ["autoflow-sandbox#9"]
+
+
+async def test_unfolded_at_start_with_a_run_or_chosen_recently(tmp_path):
+    app = every_app(runs=[COORD_3], recent=["autoflow-sandbox"])
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        # The coordinator has a run, the sandbox was chosen recently; gone is folded.
+        assert keys(issues) == ["Munsik-Park/autoflow-coordinator", "Munsik-Park/autoflow-coordinator#3",
+                                "Munsik-Park/autoflow-coordinator#67", "Munsik-Park/autoflow-coordinator#24",
+                                "Munsik-Park/autoflow-sandbox", "Munsik-Park/autoflow-sandbox#4",
+                                "Munsik-Park/autoflow-sandbox#3", "Munsik-Park/gone"]
+        assert str(issues.get_cell("Munsik-Park/gone", "run")) == "▸"
+        assert str(issues.get_cell("Munsik-Park/autoflow-sandbox", "run")) == "▾"
+
+
+async def test_enter_folds_and_unfolds_a_workspace_and_remembers_it(tmp_path):
+    state = tmp_path / "state.json"
+    app = every_app(state_file=state)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        assert keys(issues)[0] == "Munsik-Park/autoflow-coordinator" and len(keys(issues)) == 3  # all folded
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox"))
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert keys(issues)[1:4] == ["Munsik-Park/autoflow-sandbox", "Munsik-Park/autoflow-sandbox#4",
+                                     "Munsik-Park/autoflow-sandbox#3"]
+        assert keys(issues)[issues.cursor_row] == "Munsik-Park/autoflow-sandbox"
+        assert json.loads(state.read_text()) == {"recent": ["autoflow-sandbox"]}
+        await pilot.press("down")
+        assert app.current.number == 4
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox"))
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert len(keys(issues)) == 3
+        assert str(issues.get_cell("Munsik-Park/autoflow-sandbox", "title")) == "autoflow-sandbox  (2)"
+        assert json.loads(state.read_text()) == {"recent": []}
+    # The next start opens what was chosen: nothing now.
+    app = every_app(state_file=state)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        assert len(keys(app.query_one("#issues", DataTable))) == 3
+
+
+async def test_a_run_that_starts_unfolds_its_workspace(tmp_path):
+    runs = []
+
+    async def run_loader(coordinator):
+        return list(runs)
+
+    app = every_app(recent=[], run_loader=run_loader, run_refresh_sec=0.05)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        assert len(keys(issues)) == 3
+        runs.append(SANDBOX_3)
+        await pilot.pause(0.2)
+        await settle(app, pilot)
+        assert "Munsik-Park/autoflow-sandbox#3" in keys(issues)
+        assert app.current.number == 3 and app.current.repository == "Munsik-Park/autoflow-sandbox"
+
+
+async def test_starting_a_run_remembers_its_workspace(tmp_path):
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"recent": ["autoflow-coordinator", "autoflow-sandbox"]}))
+
+    async def starter(coordinator, repository, number):
+        return "%9"
+
+    app = every_app(state_file=state, starter=starter)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox#4"))
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert json.loads(state.read_text()) == {"recent": ["autoflow-sandbox", "autoflow-coordinator"]}
