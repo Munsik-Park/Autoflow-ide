@@ -511,7 +511,7 @@ async def test_enter_on_a_step_opens_it_and_c_goes_to_its_cause():
         assert isinstance(app.screen, StepDetail)
         assert app.screen.query_one("#detail").border_title == "Step 2  ↩ build-2 ← review-1"
         text = detail_text(app)
-        assert "Result   accepted" in text and "Outputs" in text and "• commits.json" in text
+        assert "Result   accepted" in text and "Outputs" in text and "1  commits.json" in text
         assert "Lacked" in text and "A Windows environment" in text
         await pilot.press("c")
         await pilot.pause()
@@ -1474,3 +1474,42 @@ async def test_the_highlighted_step_is_kept_when_the_issue_list_is_redrawn():
         await pilot.press("1", "up")                                              # moving by hand still shows
         await settle(app, pilot)
         assert app.on_header == "Munsik-Park/autoflow-sandbox" and app.current is None
+
+
+# Opening a listed output (#67)
+
+async def test_a_number_opens_a_listed_output_and_esc_goes_back_to_the_step(tmp_path):
+    from autoflow_ide.detail import OutputView
+
+    out = tmp_path / "criterion-screen-1"
+    (out / "targets").mkdir(parents=True)
+    (out / "criterion-review.md").write_text("# Criterion review\n\n- AC1 revised: A1\n")
+    (out / "targets" / "AC1.md").write_text("AC1 target\n")
+    (out / "result.json").write_text(json.dumps({"status": "accepted", "outputs": {
+        "review": str(out / "criterion-review.md"), "targets": [str(out / "targets" / "AC1.md"), "/gone/x.md"]}}))
+    app = results_app([Step("criterion-screen-1", "pass", "pass", "S1", "criterion-screen", out=str(out),
+                            result="accepted")])
+    async with app.run_test(size=(140, 40)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("2", "enter")
+        await pilot.pause()
+        text = detail_text(app)
+        assert "1  criterion-review.md" in text and "2  targets/AC1.md" in text and "3  /gone/x.md" in text
+        assert "1–3: open an output" in str(app.screen.query_one("#detail-hint").render())
+        await pilot.press("1")
+        await pilot.pause()
+        assert isinstance(app.screen, OutputView)
+        assert app.screen.query_one("#detail").border_title == "criterion-review.md"
+        assert [m.source for m in app.screen.query("#detail-body Markdown")] == ["# Criterion review\n\n- AC1 revised: A1\n"]
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, StepDetail)                          # back to the step, not out of it
+        await pilot.press("3")
+        await pilot.pause()
+        assert "This output is not there" in detail_text(app)
+        await pilot.press("escape", "9")                                    # no ninth output: nothing opens
+        await pilot.pause()
+        assert isinstance(app.screen, StepDetail)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, (StepDetail, OutputView))

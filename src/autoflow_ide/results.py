@@ -135,6 +135,53 @@ def relative(path: str, folder: Path) -> str:
         return str(Path(*parts[at[-1] + 1:])) if at else path
 
 
+# The most of an output file read to show it; the rest is left out, and the window says so.
+OUTPUT_LIMIT = 512 * 1024
+
+
+@dataclass
+class OutputFile:
+    """An output of a module run as read to show it. `kind` is markdown, json or text (`text` is the content, `cut`
+    when it was longer than OUTPUT_LIMIT), folder (`text` lists its entries), or missing or unreadable (`text` says
+    why)."""
+    path: Path
+    kind: str
+    text: str
+    cut: bool = False
+
+
+def output_path(out: str, output: str) -> Path:
+    """Where an output listed in result.json is: inside the step's output folder `out`, as `relative` gave it, or
+    as written when it is an absolute path outside it."""
+    path = Path(output).expanduser()
+    return path if path.is_absolute() else Path(out).expanduser() / path
+
+
+def read_output(path: Path) -> OutputFile:
+    if path.is_dir():
+        try:
+            entries = sorted(e.name + ("/" if e.is_dir() else "") for e in path.iterdir())
+        except OSError as e:
+            return OutputFile(path, "unreadable", str(e.strerror or e))
+        return OutputFile(path, "folder", "\n".join(entries) if entries else "(empty folder)")
+    if not path.exists():
+        return OutputFile(path, "missing", "This output is not there (moved, or not written yet).")
+    try:
+        with path.open("rb") as f:
+            data = f.read(OUTPUT_LIMIT + 1)
+    except OSError as e:
+        return OutputFile(path, "unreadable", str(e.strerror or e))
+    cut = len(data) > OUTPUT_LIMIT
+    text = data[:OUTPUT_LIMIT].decode(errors="replace")
+    suffix = path.suffix.lower()
+    if suffix == ".json" and not cut:
+        try:
+            return OutputFile(path, "json", json.dumps(json.loads(text), indent=2, ensure_ascii=False))
+        except ValueError:
+            pass
+    return OutputFile(path, "markdown" if suffix == ".md" else "text", text, cut)
+
+
 def as_list(value: Any) -> list:
     return value if isinstance(value, list) else []
 

@@ -11,7 +11,8 @@ from textual.widget import Widget
 from textual.widgets import Markdown, Static
 
 from autoflow_ide.model import Step
-from autoflow_ide.results import FAILURE, FINDINGS, Evaluation, Outcome, read_outcome
+from autoflow_ide.results import (FAILURE, FINDINGS, OUTPUT_LIMIT, Evaluation, Outcome, OutputFile, output_path,
+                                  read_outcome, read_output)
 
 LABEL_WIDTH = 8
 
@@ -81,6 +82,26 @@ def listed(lines: List[str]) -> Text:
     return Text("\n".join(f"• {line}" for line in lines) + "\n")
 
 
+def numbered(lines: List[str]) -> Text:
+    text = Text()
+    for n, line in enumerate(lines, 1):
+        text.append(f"{n}  ", style="bold")
+        text.append(f"{line}\n")
+    return text
+
+
+# Outputs past the ninth are listed but have no key to open them.
+OPENABLE = 9
+
+
+def shown_outputs(outcome: Outcome) -> List[str]:
+    """The outputs the detail lists, which a number key opens: when the folder holds nothing more telling (the
+    reason the run fell short, an evaluation, the review's findings), the outputs are the result."""
+    if outcome.failure is None and not outcome.evaluation and outcome.findings is None:
+        return outcome.outputs
+    return []
+
+
 def lacked_text(lacked: List[Tuple[str, str]]) -> Text:
     text = Text()
     for missing, instead in lacked:
@@ -104,8 +125,8 @@ def sections(outcome: Outcome) -> List[Tuple[str, Widget]]:
         parts.append(("Scores", Static(evaluation_text(outcome.evaluation))))
     if outcome.findings is not None:
         parts.append((f"Review findings ({FINDINGS})", Markdown(outcome.findings)))
-    if outcome.outputs and outcome.failure is None and not outcome.evaluation and outcome.findings is None:
-        parts.append(("Outputs", Static(listed(outcome.outputs))))
+    if shown_outputs(outcome):
+        parts.append(("Outputs", Static(numbered(shown_outputs(outcome)))))
     if outcome.lacked:
         parts.append(("Lacked", Static(lacked_text(outcome.lacked))))
     return parts
@@ -113,13 +134,15 @@ def sections(outcome: Outcome) -> List[Tuple[str, Widget]]:
 
 class StepDetail(ModalScreen[Optional[str]]):
     """Dismissed with the cause's label when the operator goes to it, None otherwise."""
-    BINDINGS = [("escape", "dismiss", "Close"), ("enter", "dismiss", "Close"), ("c", "go_to_cause", "Go to cause")]
+    BINDINGS = [("escape", "dismiss", "Close"), ("enter", "dismiss", "Close"), ("c", "go_to_cause", "Go to cause")] + [
+        (str(n), f"open_output({n})", "Open output") for n in range(1, OPENABLE + 1)]
 
     def __init__(self, step: Step, number: int):
         super().__init__()
         self.step = step
         self.number = number
         self.outcome = read_outcome(step.out) if step.out else None
+        self.outputs = shown_outputs(self.outcome) if self.outcome and not note(step, self.outcome) else []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="detail") as box:
@@ -136,7 +159,10 @@ class StepDetail(ModalScreen[Optional[str]]):
                 for title, body in (sections(self.outcome) if self.outcome and not message else []):
                     yield Static(title, classes="detail-section")
                     yield body
-            hint = (f"c: go to {self.step.cause}  ·  " if self.step.cause else "") + "↑↓ PgUp PgDn: scroll  ·  Esc: close"
+            count = min(len(self.outputs), OPENABLE)
+            opens = ("1: open the output  ·  " if count == 1 else f"1–{count}: open an output  ·  ") if count else ""
+            hint = (f"c: go to {self.step.cause}  ·  " if self.step.cause else "") + opens \
+                + "↑↓ PgUp PgDn: scroll  ·  Esc: close"
             yield Static(hint, id="detail-hint")
 
     def on_mount(self) -> None:
@@ -148,6 +174,43 @@ class StepDetail(ModalScreen[Optional[str]]):
     def action_go_to_cause(self) -> None:
         if self.step.cause:
             self.dismiss(self.step.cause)
+
+    def action_open_output(self, n: int) -> None:
+        if 1 <= n <= len(self.outputs):
+            path = output_path(self.step.out, self.outputs[n - 1])
+            self.app.push_screen(OutputView(self.outputs[n - 1], read_output(path)))
+
+
+class OutputView(ModalScreen[None]):
+    """One output of a step, over its detail (#67): Markdown rendered, JSON indented, other text as it is."""
+    BINDINGS = [("escape", "dismiss", "Close"), ("enter", "dismiss", "Close")]
+
+    def __init__(self, name: str, output: OutputFile):
+        super().__init__()
+        self.name_shown = name
+        self.output = output
+
+    def compose(self) -> ComposeResult:
+        output = self.output
+        with Vertical(id="detail") as box:
+            box.border_title = self.name_shown
+            with VerticalScroll(id="detail-body"):
+                yield Static(home_short(str(output.path)), id="detail-fields")
+                if output.kind in ("missing", "unreadable"):
+                    yield Static(output.text, classes="detail-note")
+                elif output.kind == "markdown":
+                    yield Markdown(output.text)
+                else:
+                    yield Static(Text(output.text), classes="detail-cell")
+                if output.cut:
+                    yield Static(f"Only the first {OUTPUT_LIMIT // 1024} KB is shown.", classes="detail-note")
+            yield Static("↑↓ PgUp PgDn: scroll  ·  Esc: back to the step", id="detail-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#detail-body").focus()
+
+    def action_dismiss(self, result: None = None) -> None:
+        self.dismiss(None)
 
 
 def home_short(path: str) -> str:
