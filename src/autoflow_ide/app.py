@@ -10,6 +10,7 @@ from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from rich.cells import cell_len
 from rich.text import Text
+from textual.timer import Timer
 from textual.widgets import DataTable, Footer, Input, Static
 
 from autoflow_ide.detail import StepDetail, home_short
@@ -46,6 +47,12 @@ ISSUE_REFRESH_SEC = 60.0
 WINDOW_CHECK_SEC = 15.0
 WINDOW_IDLE_SEC = 300.0
 RUN_MARK = "●"
+# Notices of something that happened once (a coordination session opened, a window closed, a focus moved, an
+# issue found, the state file not written) are shown first on the status line, so a narrow line does not cut
+# them off, and go NOTICE_SEC after they are set (#26). The other messages say what is true now (the counts, the
+# version, a read error until the next read succeeds) and stay while it is.
+NOTICE_SLOTS = ("start", "windows", "focus", "find", "state")
+NOTICE_SEC = 10.0
 ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("#", "number", 4), ("Title", "title", None)]
 # For every workspace, the number goes with the title, so a workspace's name has the room of both.
 EVERY_ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("Issue", "title", None)]
@@ -113,7 +120,7 @@ class IdeApp(App):
                  window_check_sec: float = WINDOW_CHECK_SEC, window_idle_sec: float = WINDOW_IDLE_SEC,
                  workspace_reader: Optional[WorkspaceReader] = None, placer: Optional[Placer] = None,
                  version: Optional[str] = None, workspaces_reader: Optional[WorkspacesReader] = None,
-                 state_file: Optional[Path] = None):
+                 state_file: Optional[Path] = None, notice_sec: float = NOTICE_SEC):
         """With `issues`, show them as given. Otherwise load the open issues of `repository` with `loader`,
         again every `issue_refresh_sec` seconds; without `repository` but with `coordinator`, the most recent
         open issues of every workspace of the coordinator's base (`workspaces_reader`), under a row per workspace.
@@ -185,6 +192,9 @@ class IdeApp(App):
         # The repository of the workspace row the cursor is on, when it is on one.
         self.on_header: Optional[str] = None
         self.messages: Dict[str, str] = {}
+        self.notice_sec = notice_sec
+        # The timer that clears each notice slot.
+        self.notice_timers: Dict[str, Timer] = {}
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="panes"):
@@ -853,15 +863,29 @@ class IdeApp(App):
 
     def set_message(self, slot: str, message: str) -> None:
         self.messages[slot] = message
+        if slot in NOTICE_SLOTS:
+            timer = self.notice_timers.pop(slot, None)
+            if timer is not None:
+                timer.stop()
+            if message:
+                self.notice_timers[slot] = self.set_timer(self.notice_sec, lambda: self.clear_notice(slot, message))
         self.update_status()
+
+    def clear_notice(self, slot: str, message: str) -> None:
+        """Clear notice `slot` if it still holds `message`."""
+        if self.messages.get(slot) == message:
+            self.notice_timers.pop(slot, None)
+            self.set_message(slot, "")
 
     def update_status(self) -> None:
         issue, run = self.current, self.current.run if self.current else None
         group = self.current_group()
-        parts = [(group.repository if group else self.repository) or ("every workspace" if self.every else "(no repository)"),
-                 (f"#{issue.number}" + (" (closed)" if issue.closed else "")) if issue else "no issue",
-                 run.name if run else "no run"]
-        parts += [m for m in self.messages.values() if m]
+        kind = issue_kind(issue) if issue else ""
+        parts = [self.messages[s] for s in NOTICE_SLOTS if self.messages.get(s)]
+        parts += [(group.repository if group else self.repository) or ("every workspace" if self.every else "(no repository)"),
+                  (f"#{issue.number}" + (f" ({kind})" if kind else "")) if issue else "no issue",
+                  run.name if run else "no run"]
+        parts += [m for s, m in self.messages.items() if m and s not in NOTICE_SLOTS]
         try:
             self.query_one("#status", Static).update("  |  ".join(parts))
         except NoMatches:
@@ -947,10 +971,14 @@ def take(value: str, cells: int) -> str:
     return value[:end]
 
 
+def issue_kind(issue: Issue) -> str:
+    """What the number is when it is not an open issue: a number found by `#` can be a closed issue or a pull
+    request."""
+    return ("closed PR" if issue.closed else "PR") if issue.pull else ("closed" if issue.closed else "")
+
+
 def issue_title(issue: Issue) -> str:
-    """The title, after what the number is when it is not an open issue: a number found by `#` can be a closed
-    issue or a pull request."""
-    kind = ("closed PR" if issue.closed else "PR") if issue.pull else ("closed" if issue.closed else "")
+    kind = issue_kind(issue)
     return f"({kind}) {issue.title}".rstrip() if kind else issue.title
 
 

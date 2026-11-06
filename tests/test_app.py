@@ -1287,3 +1287,46 @@ async def test_hash_shows_what_the_number_is_and_s_starts_only_an_open_issue():
             await pilot.press("s")
             await settle(app, pilot)
         assert started == []
+
+
+async def test_a_notice_shows_first_and_goes_while_counts_stay():
+    async def starter(coordinator, repository, number):
+        return "%9"
+
+    app = every_app(starter=starter, notice_sec=0.3)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox#4"))
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert status(app).startswith("autoflow-sandbox#4: coordination session in %9  |  Munsik-Park/autoflow-sandbox")
+        await pilot.pause(0.5)
+        assert "coordination session" not in status(app)
+        assert status(app).startswith("Munsik-Park/autoflow-sandbox  |  #4")
+        assert "active runs" in status(app)          # what is true now stays
+
+
+async def test_a_newer_notice_in_the_same_slot_gets_its_own_time():
+    app = every_app(notice_sec=0.3)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        app.set_message("find", "first")
+        await pilot.pause(0.2)
+        app.set_message("find", "second")
+        await pilot.pause(0.2)
+        assert "second" in status(app)               # the first one's timer does not clear the second
+        await pilot.pause(0.3)
+        assert "second" not in status(app)
+
+
+async def test_the_status_line_says_what_the_number_is():
+    async def lookup(repository, number):
+        return Issue(number, "old fix", state="closed", pull=True)
+
+    app = every_app(lookup=lookup)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("number_sign", "2", "enter")
+        await settle(app, pilot)
+        assert "  |  #2 (closed PR)  |  " in status(app)
