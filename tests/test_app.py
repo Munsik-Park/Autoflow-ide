@@ -1186,7 +1186,6 @@ async def test_hash_looks_up_an_issue_not_listed_and_s_says_it_is_closed():
         await settle(app, pilot)
         assert asked == [("Munsik-Park/autoflow-sandbox", 12)] and started == []
         assert keys(issues)[issues.cursor_row] == "Munsik-Park/autoflow-sandbox#12"
-        assert "autoflow-sandbox#12 is closed" in status(app)
         await pilot.press("s")
         await settle(app, pilot)
         assert started == [] and "autoflow-sandbox#12 is closed" in status(app)
@@ -1263,17 +1262,28 @@ async def test_hash_goes_to_exactly_that_number():
         assert app.query_one("#issues", DataTable).row_count == 3      # nothing added
 
 
-async def test_hash_on_a_pull_request_says_so_and_adds_nothing():
-    async def lookup(repository, number):
-        return Issue(number, "[fix · #28] A blank --tz", pull=True)
+async def test_hash_shows_what_the_number_is_and_s_starts_only_an_open_issue():
+    started = []
 
-    app = every_app(lookup=lookup)
+    async def lookup(repository, number):
+        return {29: Issue(29, "fix the tz", pull=True), 2: Issue(2, "old fix", state="closed", pull=True),
+                12: Issue(12, "an old one", state="closed")}[number]
+
+    async def starter(coordinator, repository, number):
+        started.append(number)
+        return "%9"
+
+    app = every_app(lookup=lookup, starter=starter)
     async with app.run_test(size=(121, 37)) as pilot:
         await settle(app, pilot)
         issues = app.query_one("#issues", DataTable)
-        before = keys(issues)
-        issues.move_cursor(row=before.index("Munsik-Park/autoflow-sandbox#4"))
-        await pilot.press("number_sign", "2", "9", "enter")
-        await settle(app, pilot)
-        assert keys(issues) == before and app.current.number == 4
-        assert "autoflow-sandbox#29 is a pull request" in status(app)
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox#4"))
+        for number, shown in ((29, "29  (PR) "), (2, "2  (closed PR) "), (12, "12  (closed) ")):
+            await pilot.press("number_sign", *str(number), "enter")
+            await settle(app, pilot)
+            row = f"Munsik-Park/autoflow-sandbox#{number}"
+            assert keys(issues)[issues.cursor_row] == row
+            assert str(issues.get_cell(row, "title")).startswith(shown)    # the title follows, cut to the pane
+            await pilot.press("s")
+            await settle(app, pilot)
+        assert started == []
