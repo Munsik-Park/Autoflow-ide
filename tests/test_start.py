@@ -5,7 +5,7 @@ import stat
 import pytest
 
 from autoflow_ide.start import (Setting, StartError, Workspace, coordinator_base, coordinator_workspaces,
-                                create_workspace, is_repository, find_workspace, find_workspace_entry, instruction, list_workspaces, open_coordination,
+                                create_workspace, repository_of, workspace_instruction, find_workspace, find_workspace_entry, instruction, list_workspaces, open_coordination,
                                 parse_config, setting_source, start_run, workspace_base)
 
 FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
@@ -155,16 +155,45 @@ async def test_create_workspace_opens_nothing_when_one_names_the_repository(tmp_
     base = tmp_path / "base"
     workspace(base, "sandbox", "Munsik-Park/autoflow-sandbox")
     log = fake_tmux(tmp_path, monkeypatch)
+    clone = coordinator_clone(tmp_path, base)
     with pytest.raises(StartError, match="Munsik-Park/autoflow-sandbox already has a workspace: sandbox"):
-        await create_workspace(coordinator_clone(tmp_path, base), "Munsik-Park/autoflow-sandbox")
+        await create_workspace(clone, "Munsik-Park/autoflow-sandbox")
+    with pytest.raises(StartError, match="https://gitlab.com/a/b is not a GitHub repository"):
+        await create_workspace(clone, "https://gitlab.com/a/b")
     assert not log.exists()
 
 
-def test_repository_is_owner_slash_name():
-    for good in ("Munsik-Park/autoflow-sandbox", "a/b", "owner/name.with_dots-1"):
-        assert is_repository(good), good
-    for bad in ("", "autoflow", "owner/", "/name", "-owner/name", "owner/name/extra", "owner/..", "own er/name"):
-        assert not is_repository(bad), bad
+async def test_create_workspace_from_a_clone_address(tmp_path, monkeypatch):
+    base = tmp_path / "base"
+    workspace(base, "autoflow-sandbox", "Munsik-Park/autoflow-sandbox")
+    clone = coordinator_clone(tmp_path, base)
+    log = fake_tmux(tmp_path, monkeypatch)
+    assert await create_workspace(clone, "git@github.com:connev-llm/llmroute.git") == "%7"
+    calls = log.read_text().splitlines()
+    assert calls[0] == f"new-window -c {clone} -n workspace:connev-llm/llmroute -P -F #{{pane_id}}"
+    assert calls[1] == ("send-keys -t %7 -l -- claude 'Create a workspace for connev-llm/llmroute, cloned from "
+                        "git@github.com:connev-llm/llmroute.git.'")
+    with pytest.raises(StartError, match="Munsik-Park/autoflow-sandbox already has a workspace"):
+        await create_workspace(clone, "https://github.com/Munsik-Park/autoflow-sandbox")
+
+
+def test_a_repository_given_as_owner_name_web_address_or_clone_address():
+    for address in ("connev-llm/llmroute", "connev-llm/llmroute.git", "https://github.com/connev-llm/llmroute",
+                    "https://github.com/connev-llm/llmroute/", "github.com/connev-llm/llmroute",
+                    "https://github.com/connev-llm/llmroute.git", "git@github.com:connev-llm/llmroute.git",
+                    "ssh://git@github.com/connev-llm/llmroute.git", " git@github.com:connev-llm/llmroute.git "):
+        assert repository_of(address) == "connev-llm/llmroute", address
+    assert repository_of("owner/name.with_dots-1") == "owner/name.with_dots-1"
+    for bad in ("", "llmroute", "owner/", "/name", "-owner/name", "owner/name/extra", "owner/..", "own er/name",
+                "https://gitlab.com/connev-llm/llmroute", "git@gitlab.com:connev-llm/llmroute.git",
+                "https://github.com/connev-llm/llmroute/issues"):
+        assert repository_of(bad) is None, bad
+
+
+def test_the_session_gets_the_address_as_given_so_it_clones_that_way():
+    assert workspace_instruction("connev-llm/llmroute") == "Create a workspace for connev-llm/llmroute."
+    assert workspace_instruction("git@github.com:connev-llm/llmroute.git") == (
+        "Create a workspace for connev-llm/llmroute, cloned from git@github.com:connev-llm/llmroute.git.")
 
 
 def test_config_settings_and_where_each_was_set():

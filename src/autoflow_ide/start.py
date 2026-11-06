@@ -180,17 +180,33 @@ async def start_run(coordinator: str, repository: str, issue: int) -> str:
 # Adding a workspace: the operator gives the repository; the coordination session asks for the rest (the clone, the
 # base branch) and writes the workspace (the coordinator's WORKSPACE.md, "Creating").
 
-# A GitHub repository as owner/name.
-REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+")
+# A GitHub repository, given as the operator has it at hand: owner/name, the web address
+# (https://github.com/owner/name) or a clone address (git@github.com:owner/name.git, https://github.com/owner/name.git).
+OWNER = r"(?P<owner>[A-Za-z0-9][A-Za-z0-9-]*)"
+NAME = r"(?P<name>[A-Za-z0-9._-]+?)"
+ADDRESSES = [re.compile(p) for p in (
+    rf"{OWNER}/{NAME}(?:\.git)?",
+    rf"(?:https?://)?(?:www\.)?github\.com/{OWNER}/{NAME}(?:\.git)?/?",
+    rf"(?:ssh://)?git@github\.com[:/]{OWNER}/{NAME}(?:\.git)?",
+)]
 
 
-def is_repository(text: str) -> bool:
-    return bool(REPOSITORY.fullmatch(text)) and text.split("/")[1] not in (".", "..")
+def repository_of(address: str) -> Optional[str]:
+    """owner/name of the GitHub repository `address` names, or None when it names none."""
+    for pattern in ADDRESSES:
+        match = pattern.fullmatch(address.strip())
+        if match and match["name"] not in (".", ".."):
+            return f"{match['owner']}/{match['name']}"
+    return None
 
 
-def workspace_instruction(repository: str) -> str:
-    """The operator's first instruction to a coordination session that makes a workspace."""
-    return f"Create a workspace for {repository}."
+def workspace_instruction(address: str) -> str:
+    """The operator's first instruction to a coordination session that makes a workspace: the repository, and the
+    address it was given as when that is more than owner/name, so the clone is made the way the operator gave it."""
+    repository = repository_of(address) or address
+    if address.strip() == repository:
+        return f"Create a workspace for {repository}."
+    return f"Create a workspace for {repository}, cloned from {address.strip()}."
 
 
 def workspace_window_name(repository: str) -> str:
@@ -198,10 +214,14 @@ def workspace_window_name(repository: str) -> str:
     return f"workspace:{repository}"
 
 
-async def create_workspace(coordinator: str, repository: str) -> str:
-    """Open a coordination session that makes a workspace for `repository` in the coordinator's base; returns its
-    pane id. Nothing is opened when a workspace of the base already names that repository."""
+async def create_workspace(coordinator: str, address: str) -> str:
+    """Open a coordination session that makes a workspace for the repository `address` names (see repository_of) in
+    the coordinator's base; returns its pane id. Nothing is opened when a workspace of the base already names that
+    repository."""
+    repository = repository_of(address)
+    if repository is None:
+        raise StartError(f"{address} is not a GitHub repository")
     found = [w.name for w in await coordinator_workspaces(coordinator) if w.github == repository]
     if found:
         raise StartError(f"{repository} already has a workspace: {', '.join(found)}")
-    return await open_coordination(coordinator, workspace_window_name(repository), workspace_instruction(repository))
+    return await open_coordination(coordinator, workspace_window_name(repository), workspace_instruction(address))

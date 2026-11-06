@@ -1407,15 +1407,15 @@ async def test_w_asks_a_coordination_session_for_a_workspace_and_shows_it_unfold
         assert created == [("/c", "Munsik-Park/new")]
         assert "workspace for Munsik-Park/new: coordination session in %9" in app.messages["workspace"]
         assert app.query_one("#issues", DataTable).has_focus                   # the box closed
-        await pilot.press("w", *"Munsik-Park/new", "enter")                    # again: back to that session
+        await pilot.press("w", *"git@github.com:Munsik-Park/new.git", "enter")  # the same repository, as a clone address
         await settle(app, pilot)
-        assert created == [("/c", "Munsik-Park/new")] and focused == ["%9"]
+        assert created == [("/c", "Munsik-Park/new")] and focused == ["%9"]       # back to that session
         await pilot.press("w", *"Munsik-Park/new", "enter")                    # its pane is gone
         await settle(app, pilot)
         assert "press w to open it again" in app.messages["workspace"]
-        await pilot.press("w", *"Munsik-Park/new", "enter")
+        await pilot.press("w", *"https://github.com/Munsik-Park/new", "enter")
         await settle(app, pilot)
-        assert len(created) == 2
+        assert created[1] == ("/c", "https://github.com/Munsik-Park/new")       # the address as typed
         workspaces.append(WorkspaceEntry("new", "Munsik-Park/new", "~/n", "main"))   # the session wrote it
         await pilot.press("r")
         await settle(app, pilot)
@@ -1424,7 +1424,7 @@ async def test_w_asks_a_coordination_session_for_a_workspace_and_shows_it_unfold
         assert "Munsik-Park/new#1" in keys(app.query_one("#issues", DataTable))
 
 
-async def test_w_opens_nothing_for_a_name_that_is_not_owner_slash_name_or_a_workspace_that_exists():
+async def test_w_opens_nothing_for_what_is_not_a_github_repository_or_a_workspace_that_exists():
     from autoflow_ide.start import StartError
 
     created = []
@@ -1438,7 +1438,7 @@ async def test_w_opens_nothing_for_a_name_that_is_not_owner_slash_name_or_a_work
         await settle(app, pilot)
         await pilot.press("w", *"autoflow", "enter")
         await settle(app, pilot)
-        assert created == [] and app.messages["workspace"] == "add workspace: autoflow is not owner/name"
+        assert created == [] and app.messages["workspace"] == "add workspace: autoflow is not a GitHub repository"
         await pilot.press("w", *"Munsik-Park/autoflow-sandbox", "enter")
         await settle(app, pilot)
         assert app.messages["workspace"] == "add workspace: Munsik-Park/autoflow-sandbox already has a workspace: autoflow-sandbox"
