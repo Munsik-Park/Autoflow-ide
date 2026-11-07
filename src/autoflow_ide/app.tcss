@@ -21,6 +21,11 @@
     width: 1fr;
 }
 
+/* The room under the info lines: rows past it scroll inside the table, which keeps the cursor's row in view (#69). */
+#run {
+    height: 1fr;
+}
+
 #sessions-pane {
     width: 28;
 }
