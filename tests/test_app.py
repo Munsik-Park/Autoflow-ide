@@ -1513,3 +1513,24 @@ async def test_a_number_opens_a_listed_output_and_esc_goes_back_to_the_step(tmp_
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(app.screen, (StepDetail, OutputView))
+
+
+# Steps past the pane's height scroll into view (#69)
+
+async def test_the_run_table_scrolls_to_a_step_below_the_pane():
+    run = Run("autoflow-sandbox-3-k", [Step(f"step-{n}", "pass", "pass", "S1") for n in range(1, 24)],
+              [Session("S1", "working")], issue="3", branch="b", reference="full", checkout="/w", records="/r",
+              coordination="%1")
+    app = every_app(runs=[run])
+    async with app.run_test(size=(124, 33)) as pilot:
+        await settle(app, pilot)
+        issues, steps = app.query_one("#issues", DataTable), app.query_one("#run", DataTable)
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox#3"))
+        await settle(app, pilot)
+        pane = app.query_one("#run-pane").content_region
+        assert steps.region.bottom <= pane.bottom                     # inside the pane, under the info lines
+        await pilot.press("2", *["down"] * 22)
+        await settle(app, pilot)
+        assert steps.cursor_row == 22 and steps.scroll_y > 0           # the table scrolled
+        top = steps.scroll_y
+        assert top <= 22 < top + steps.size.height - 1                 # step 23 is in view (below the header row)
