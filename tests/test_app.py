@@ -668,19 +668,20 @@ class FakeWindows:
         self.closed.append(window.name)
 
 
-def windows_app(windows, open_issues, runs, lookup, idle=0.2):
+def windows_app(windows, open_issues, runs, lookup, idle=0.2, check=0.05, **kw):
+    """`open_issues` and `runs` are lists, or functions that give them at each read."""
     async def loader(repository):
-        return open_issues
+        return open_issues() if callable(open_issues) else open_issues
 
     async def run_loader(coordinator):
-        return runs
+        return runs() if callable(runs) else runs
 
     async def workspace_finder(coordinator, repository):
         return "autoflow-sandbox"
 
     return IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c", run_loader=run_loader,
                   lookup=lookup, windows=windows, workspace_finder=workspace_finder,
-                  window_check_sec=0.05, window_idle_sec=idle)
+                  window_check_sec=check, window_idle_sec=idle, **kw)
 
 
 def lookup_states(states, asked):
@@ -701,7 +702,7 @@ async def test_closes_the_window_of_a_closed_issue_without_a_run_after_its_scree
         await pilot.pause(0.8)
         await settle(app, pilot)
         assert windows.closed == ["autoflow-sandbox#8"]
-        assert asked == [8]
+        assert asked == [8, 8]                     # found closed at the first check, asked again to close it
         assert "closed autoflow-sandbox#8: #8 is closed and has no run" in status(app)
 
 
@@ -711,23 +712,34 @@ async def test_keeps_the_window_of_a_closed_issue_while_it_has_a_run():
     app = windows_app(windows, [Issue(4, "four")], RECORDED_RUNS, lookup_states({3: "closed"}, asked))
     async with app.run_test() as pilot:
         await settle(app, pilot)
-        await pilot.pause(0.5)
+        await pilot.pause(0.7)                     # more than three times window_idle_sec
         await settle(app, pilot)
         assert windows.closed == []
 
 
+def timed(lookup, times):
+    async def timed_lookup(repository, number):
+        times.append(time.monotonic())
+        return await lookup(repository, number)
+    return timed_lookup
+
+
+def spaced(times, idle):
+    return all(b - a >= idle - 0.02 for a, b in zip(times, times[1:]))
+
+
 async def test_keeps_the_window_of_an_open_issue():
-    asked = []
+    asked, times = [], []
     windows = FakeWindows([4, 9])
     # 4 is in the open list; 9 is not (more open issues than listed), and GitHub says it is open.
-    app = windows_app(windows, [Issue(4, "four")], [], lookup_states({9: "open"}, asked))
+    app = windows_app(windows, [Issue(4, "four")], [], timed(lookup_states({9: "open"}, asked), times))
     async with app.run_test() as pilot:
         await settle(app, pilot)
         await pilot.pause(0.5)
         await settle(app, pilot)
         assert windows.closed == []
         assert 4 not in asked
-        assert 1 <= asked.count(9) <= 2            # asked again only after window_idle_sec
+        assert asked.count(9) >= 1 and spaced(times, 0.2)   # asked again only after window_idle_sec
 
 
 async def test_keeps_a_window_whose_screen_keeps_changing():
@@ -755,6 +767,160 @@ async def test_keeps_windows_while_the_runs_cannot_be_read():
         await pilot.pause(0.5)
         await settle(app, pilot)
         assert windows.closed == [] and asked == []
+
+
+# The wait counts from the later of the screen's last change and the issue first found closed with no run
+
+import asyncio
+import time
+
+from autoflow_ide.app import WINDOW_IDLE_SEC
+
+
+class TimedWindows(FakeWindows):
+    """FakeWindows that keeps when each screen was first read and when each window was closed."""
+
+    def __init__(self, numbers, screens=None):
+        super().__init__(numbers, screens)
+        self.changed = {}
+        self.closed_at = {}
+        self.last = {}
+
+    async def screen(self, window):
+        shown = await super().screen(window)
+        number = int(window.name.split("#")[1])
+        if self.last.get(number) != shown:
+            self.last[number] = shown
+            self.changed[number] = time.monotonic()
+        return shown
+
+    async def close(self, window):
+        self.closed_at[int(window.name.split("#")[1])] = time.monotonic()
+        await super().close(window)
+
+
+def test_the_wait_stays_five_minutes():
+    assert WINDOW_IDLE_SEC == 300.0
+
+
+async def test_a_waiting_session_keeps_its_window_for_the_whole_wait_after_its_issue_closes():
+    idle, refresh, check = 0.5, 0.1, 0.05
+    windows = TimedWindows([8])                    # the session waits for input: its screen does not change
+    start = time.monotonic()
+    closed_after = 0.8                             # a merge closes #8: it leaves the open list, GitHub says closed
+    found_closed = []
+
+    def is_closed():
+        return time.monotonic() - start >= closed_after
+
+    def open_issues():
+        return [Issue(4, "four")] + ([] if is_closed() else [Issue(8, "eight")])
+
+    async def lookup(repository, number):
+        closed = is_closed()
+        if closed and not found_closed:
+            found_closed.append(time.monotonic())
+        return Issue(number, "eight", state="closed" if closed else "open")
+
+    app = windows_app(windows, open_issues, [], lookup, idle=idle, issue_refresh_sec=refresh)
+    async with app.run_test(size=(160, 24)) as pilot:
+        await pilot.pause(closed_after + idle - 0.1)
+        assert windows.closed == []                # the screen has been still for longer than the wait
+        await pilot.pause(refresh + 2 * check + 0.3)
+        await settle(app, pilot)
+        assert windows.closed == ["autoflow-sandbox#8"]
+        closed_at = start + closed_after
+        assert windows.closed_at[8] - found_closed[0] >= idle - 0.02
+        assert idle - 0.02 <= windows.closed_at[8] - closed_at <= idle + refresh + 2 * check + 0.15
+        assert "closed autoflow-sandbox#8: #8 is closed and has no run" in status(app)
+
+
+async def test_the_wait_counts_from_the_screen_when_it_changes_after_the_issue_is_found_closed():
+    idle = 0.3
+    # #8 is closed from the start; its screen goes on changing for about half a second.
+    windows = TimedWindows([8], {8: [str(n) for n in range(10)]})
+    asked = []
+    app = windows_app(windows, [Issue(4, "four")], [], lookup_states({8: "closed"}, asked), idle=idle)
+    async with app.run_test(size=(160, 24)) as pilot:
+        await pilot.pause(1.5)
+        await settle(app, pilot)
+        assert windows.closed == ["autoflow-sandbox#8"]
+        assert asked[0] == 8 and windows.closed_at[8] - windows.changed[8] >= idle - 0.02
+
+
+async def test_the_wait_counts_from_the_end_of_the_run_of_a_closed_issue():
+    idle = 0.5
+    windows = TimedWindows([3])
+    start = time.monotonic()
+    run_ends = 0.6
+    asked = []
+
+    def runs():
+        return RECORDED_RUNS if time.monotonic() - start < run_ends else []
+
+    app = windows_app(windows, [Issue(4, "four")], runs, lookup_states({3: "closed"}, asked), idle=idle,
+                      run_refresh_sec=0.05)
+    async with app.run_test(size=(160, 24)) as pilot:
+        await pilot.pause(run_ends + 1.0)
+        await settle(app, pilot)
+        assert windows.closed == ["autoflow-sandbox#3"]
+        assert windows.closed_at[3] - (start + run_ends) >= idle - 0.02
+
+
+async def test_the_wait_counts_from_when_a_slow_lookup_returns():
+    idle, check, delay = 0.5, 0.3, 0.2
+    windows = TimedWindows([8])
+    returned = []
+
+    async def lookup(repository, number):
+        if not returned:
+            await asyncio.sleep(delay)             # gh is slow to answer the first time
+        returned.append(time.monotonic())
+        return Issue(number, "eight", state="closed")
+
+    app = windows_app(windows, [Issue(4, "four")], [], lookup, idle=idle, check=check)
+    async with app.run_test(size=(160, 24)) as pilot:
+        await pilot.pause(check + delay + idle + 2 * check)
+        await settle(app, pilot)
+        assert windows.closed == ["autoflow-sandbox#8"]
+        assert windows.closed_at[8] - returned[0] >= idle - 0.02
+
+
+async def test_keeps_the_window_of_an_issue_reopened_during_the_wait():
+    asked = []
+    windows = FakeWindows([8])
+    # #8 is not in the open list (more open issues than listed): GitHub says closed, then open again.
+
+    async def lookup(repository, number):
+        asked.append(number)
+        return Issue(number, "eight", state="closed" if len(asked) == 1 else "open")
+
+    app = windows_app(windows, [Issue(4, "four")], [], lookup, idle=0.2)
+    async with app.run_test(size=(160, 24)) as pilot:
+        await pilot.pause(0.6)
+        await settle(app, pilot)
+        assert windows.closed == []
+        assert asked[:2] == [8, 8]
+
+
+async def test_a_failing_lookup_is_asked_at_most_once_per_wait():
+    for screens, first in (([str(n) for n in range(100)], None), (None, "closed")):
+        # A screen that keeps changing and a lookup that always fails; a closed issue whose lookup then fails.
+        asked, times = [], []
+        windows = FakeWindows([8], {8: screens} if screens else None)
+
+        async def lookup(repository, number):
+            asked.append(number)
+            if first and len(asked) == 1:
+                return Issue(number, "eight", state=first)
+            raise IssueSourceError("gh: could not connect")
+
+        app = windows_app(windows, [Issue(4, "four")], [], timed(lookup, times), idle=0.2)
+        async with app.run_test(size=(160, 24)) as pilot:
+            await pilot.pause(0.7)
+            await settle(app, pilot)
+            assert windows.closed == []
+            assert 2 <= len(times) <= 5 and spaced(times, 0.2)
 
 
 async def test_info_above_the_run_shows_the_workspace_and_where_the_run_is():
