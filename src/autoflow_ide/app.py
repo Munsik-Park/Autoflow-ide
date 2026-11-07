@@ -46,10 +46,10 @@ RUN_REFRESH_SEC = 5.0
 # The open issues are also read again on this interval, so an issue a merge closed leaves the list without a
 # key press (about 60 gh calls an hour), and when a step changes (see show_runs).
 ISSUE_REFRESH_SEC = 60.0
-# The coordination session window of an issue that is closed and has no run is closed once its screen has not
-# changed for WINDOW_IDLE_SEC, so a last report being written is not cut off and the operator can come back after
-# a merge to go on with the session, whose screen stands still while it waits for input; checked every
-# WINDOW_CHECK_SEC.
+# The coordination session window of an issue that is closed and has no run is closed WINDOW_IDLE_SEC after the
+# later of its screen's last change and the IDE first finding the issue closed with no run, so a last report being
+# written is not cut off and the operator can come back after a merge to go on with the session, whose screen
+# stands still while it waits for input (#28); checked every WINDOW_CHECK_SEC.
 WINDOW_CHECK_SEC = 15.0
 WINDOW_IDLE_SEC = 300.0
 RUN_MARK = "●"
@@ -204,8 +204,12 @@ class IdeApp(App):
         self.places: Dict[str, str] = {}
         # The coordination session windows, by (workspace, issue): (window id, its screen, when first seen).
         self.screens: Dict[Tuple[str, int], Tuple[str, str, float]] = {}
-        # When an issue was last looked up and found open, so it is not looked up on every check.
-        self.found_open: Dict[IssueKey, float] = {}
+        # When an issue was last looked up and not found closed (found open, or the lookup failed), so it is not
+        # looked up on every check.
+        self.not_found_closed: Dict[IssueKey, float] = {}
+        # When each window's issue was first found closed with no run, by (workspace, issue), until a check finds
+        # it otherwise: the wait to close the window counts from the later of this and its screen's last change.
+        self.finished_since: Dict[Tuple[str, int], float] = {}
         # The steps of each shown run, by run name, as last read: what a step change is compared against.
         self.step_marks: Dict[str, List[Tuple[str, str, Optional[str]]]] = {}
         self.current: Optional[Issue] = None
@@ -693,9 +697,12 @@ class IdeApp(App):
             pass  # the app is closing: its widgets are gone
 
     async def close_finished_windows(self) -> None:
-        """Close the coordination session window of each issue that is closed and has no run, once its screen
-        has not changed for window_idle_sec. One issue can take several runs, so an open issue keeps its
-        window after a run ends; a merge closes the issue before the run ends, so a run keeps it too."""
+        """Close the coordination session window of each issue that is closed and has no run, window_idle_sec
+        after the later of its screen's last change and the first check that found the issue closed with no run,
+        so a session waiting when its issue closed keeps its window for the whole wait (#28). GitHub is asked
+        again just before the window is closed, so an issue reopened during the wait keeps it. One issue can take
+        several runs, so an open issue keeps its window after a run ends; a merge closes the issue before the run
+        ends, so a run keeps it too."""
         found: Dict[Tuple[str, int], Tuple[str, Window]] = {}
         try:
             if self.every:
@@ -712,6 +719,7 @@ class IdeApp(App):
             return
         now = time.monotonic()
         self.screens = {k: s for k, s in self.screens.items() if k in found}
+        self.finished_since = {k: t for k, t in self.finished_since.items() if k in found}
         for (workspace, number), (repository, window) in found.items():
             try:
                 screen = await self.windows.screen(window)
@@ -721,7 +729,18 @@ class IdeApp(App):
             seen = self.screens.get((workspace, number))
             if seen is None or seen[0] != window.id or seen[1] != screen:
                 self.screens[(workspace, number)] = seen = (window.id, screen, now)
-            if now - seen[2] < self.window_idle_sec or not await self.finished((repository, number), now):
+            key = (repository, number)
+            since = self.finished_since.get((workspace, number))
+            if not await self.finished(key, now, ask=since is None):
+                self.finished_since.pop((workspace, number), None)
+                continue
+            if since is None:
+                self.finished_since[(workspace, number)] = since = now
+            if now - max(seen[2], since) < self.window_idle_sec:
+                continue
+            if not await self.finished(key, now, ask=True):
+                # Reopened during the wait, or not known: the wait starts again once it is found closed.
+                self.finished_since.pop((workspace, number), None)
                 continue
             try:
                 await self.windows.close(window)
@@ -729,12 +748,15 @@ class IdeApp(App):
                 self.set_message("windows", f"{window.name}: {e}")
                 continue
             del self.screens[(workspace, number)]
+            del self.finished_since[(workspace, number)]
             self.started.pop((repository, number), None)
             self.set_message("windows", f"closed {window.name}: #{number} is closed and has no run")
 
-    async def finished(self, key: IssueKey, now: float) -> bool:
+    async def finished(self, key: IssueKey, now: float, ask: bool = True) -> bool:
         """Whether issue `key` is closed and has no active run. Closed is asked of GitHub, not taken from
-        the issue missing from the open list; an issue found open is asked again after window_idle_sec."""
+        the issue missing from the open list; without `ask`, an earlier closed answer stands and GitHub is not
+        asked. An issue found open, or whose lookup failed, is asked again after window_idle_sec, so a window
+        is looked up at most about once per window_idle_sec while GitHub says open or cannot be reached."""
         repository, number = key
         group = self.group_of(repository)
         if group is None or not (group.listed and self.runs_read):
@@ -742,16 +764,19 @@ class IdeApp(App):
         if (any(r.issue == str(number) and self.run_repository(r) == repository for r in self.runs)
                 or any(i.number == number for i in group.open_issues)):
             return False
-        found_open = self.found_open.get(key)
-        if found_open is not None and now - found_open < self.window_idle_sec:
+        if not ask:
+            return True
+        asked = self.not_found_closed.get(key)
+        if asked is not None and now - asked < self.window_idle_sec:
             return False
         try:
             issue = await self.lookup(repository, number)
         except IssueSourceError as e:
             self.set_message("windows", f"issue {self.label(key)}: {e}")
+            self.not_found_closed[key] = now
             return False
         if not issue.closed:
-            self.found_open[key] = now
+            self.not_found_closed[key] = now
         return issue.closed
 
     # Selection
