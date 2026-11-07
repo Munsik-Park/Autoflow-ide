@@ -49,7 +49,7 @@ ISSUE_REFRESH_SEC = 60.0
 # The coordination session window of an issue that is closed and has no run is closed WINDOW_IDLE_SEC after the
 # later of its screen's last change and the IDE first finding the issue closed with no run, so a last report being
 # written is not cut off and the operator can come back after a merge to go on with the session, whose screen
-# stands still while it waits for input (#28); checked every WINDOW_CHECK_SEC.
+# stands still while it waits for input; checked every WINDOW_CHECK_SEC.
 WINDOW_CHECK_SEC = 15.0
 WINDOW_IDLE_SEC = 300.0
 RUN_MARK = "●"
@@ -699,7 +699,7 @@ class IdeApp(App):
     async def close_finished_windows(self) -> None:
         """Close the coordination session window of each issue that is closed and has no run, window_idle_sec
         after the later of its screen's last change and the first check that found the issue closed with no run,
-        so a session waiting when its issue closed keeps its window for the whole wait (#28). GitHub is asked
+        so a session waiting when its issue closed keeps its window for the whole wait. GitHub is asked
         again just before the window is closed, so an issue reopened during the wait keeps it. One issue can take
         several runs, so an open issue keeps its window after a run ends; a merge closes the issue before the run
         ends, so a run keeps it too."""
@@ -735,7 +735,8 @@ class IdeApp(App):
                 self.finished_since.pop((workspace, number), None)
                 continue
             if since is None:
-                self.finished_since[(workspace, number)] = since = now
+                # When the lookup returned, not when the check began: a slow lookup does not use up the wait.
+                self.finished_since[(workspace, number)] = since = time.monotonic()
             if now - max(seen[2], since) < self.window_idle_sec:
                 continue
             if not await self.finished(key, now, ask=True):

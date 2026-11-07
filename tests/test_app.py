@@ -668,7 +668,7 @@ class FakeWindows:
         self.closed.append(window.name)
 
 
-def windows_app(windows, open_issues, runs, lookup, idle=0.2, **kw):
+def windows_app(windows, open_issues, runs, lookup, idle=0.2, check=0.05, **kw):
     """`open_issues` and `runs` are lists, or functions that give them at each read."""
     async def loader(repository):
         return open_issues() if callable(open_issues) else open_issues
@@ -681,7 +681,7 @@ def windows_app(windows, open_issues, runs, lookup, idle=0.2, **kw):
 
     return IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c", run_loader=run_loader,
                   lookup=lookup, windows=windows, workspace_finder=workspace_finder,
-                  window_check_sec=0.05, window_idle_sec=idle, **kw)
+                  window_check_sec=check, window_idle_sec=idle, **kw)
 
 
 def lookup_states(states, asked):
@@ -769,8 +769,9 @@ async def test_keeps_windows_while_the_runs_cannot_be_read():
         assert windows.closed == [] and asked == []
 
 
-# The wait counts from the later of the screen's last change and the issue first found closed with no run (#28)
+# The wait counts from the later of the screen's last change and the issue first found closed with no run
 
+import asyncio
 import time
 
 from autoflow_ide.app import WINDOW_IDLE_SEC
@@ -864,6 +865,25 @@ async def test_the_wait_counts_from_the_end_of_the_run_of_a_closed_issue():
         await settle(app, pilot)
         assert windows.closed == ["autoflow-sandbox#3"]
         assert windows.closed_at[3] - (start + run_ends) >= idle - 0.02
+
+
+async def test_the_wait_counts_from_when_a_slow_lookup_returns():
+    idle, check, delay = 0.5, 0.3, 0.2
+    windows = TimedWindows([8])
+    returned = []
+
+    async def lookup(repository, number):
+        if not returned:
+            await asyncio.sleep(delay)             # gh is slow to answer the first time
+        returned.append(time.monotonic())
+        return Issue(number, "eight", state="closed")
+
+    app = windows_app(windows, [Issue(4, "four")], [], lookup, idle=idle, check=check)
+    async with app.run_test(size=(160, 24)) as pilot:
+        await pilot.pause(check + delay + idle + 2 * check)
+        await settle(app, pilot)
+        assert windows.closed == ["autoflow-sandbox#8"]
+        assert windows.closed_at[8] - returned[0] >= idle - 0.02
 
 
 async def test_keeps_the_window_of_an_issue_reopened_during_the_wait():
