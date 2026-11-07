@@ -61,7 +61,7 @@ NOTICE_SLOTS = ("start", "workspace", "windows", "focus", "find", "state")
 NOTICE_SEC = 10.0
 ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("#", "number", 4), ("Title", "title", None)]
 # For every workspace, the number goes with the title, so a workspace's name has the room of both.
-EVERY_ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("Issue", "title", None)]
+EVERY_ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("Workspace / Issue", "title", None)]
 UNFOLDED_MARK = "▾"
 FOLDED_MARK = "▸"
 RUN_COLUMNS: List[ColumnSpec] = [("Step", "step", 4), ("Module run", "name", None), ("Session", "session", 7),
@@ -106,7 +106,10 @@ class IdeApp(App):
     CSS_PATH = "app.tcss"
     TITLE = "autoflow-ide"
     BINDINGS = [
+        # The left pane holds the issues of one repository, or workspaces and their issues (#71): one of these
+        # two is shown, see check_action.
         ("1", "focus_pane('issues')", "Issues"),
+        ("1", "focus_pane('issues', 'every')", "Workspaces"),
         ("2", "focus_pane('run')", "Run"),
         ("3", "focus_pane('sessions')", "Sessions"),
         ("r", "refresh_issues", "Refresh"),
@@ -219,7 +222,7 @@ class IdeApp(App):
     def compose(self) -> ComposeResult:
         with Horizontal(id="panes"):
             with Vertical(id="issues-pane", classes="pane") as pane:
-                pane.border_title = "Issues"
+                pane.border_title = self.issues_title()
                 yield DataTable(id="issues", cursor_type="row")
                 yield Input(id="find")
             with Vertical(id="run-pane", classes="pane") as pane:
@@ -858,7 +861,7 @@ class IdeApp(App):
     def action_toggle_running(self) -> None:
         """Show only the issues with a run, or all again."""
         self.running_only = not self.running_only
-        self.query_one("#issues-pane").border_title = "Issues · running" if self.running_only else "Issues"
+        self.query_one("#issues-pane").border_title = self.issues_title()
         self.render_issues()
         self.show_issue(self.current_in())
 
@@ -982,7 +985,18 @@ class IdeApp(App):
         except NoMatches:
             pass  # the app is closing (a timer can fire meanwhile): its widgets are gone
 
-    def action_focus_pane(self, pane: str) -> None:
+    def issues_title(self) -> str:
+        """The left pane's title: it lists workspaces when it shows every workspace (#71)."""
+        title = "Workspaces" if self.every else "Issues"
+        return f"{title} · running" if self.running_only else title
+
+    def check_action(self, action: str, parameters: Tuple[object, ...]) -> Optional[bool]:
+        """Of the two bindings of `1`, the one that names what the left pane holds is shown and runs."""
+        if action == "focus_pane" and parameters and parameters[0] == "issues":
+            return ("every" in parameters[1:]) == self.every
+        return True
+
+    def action_focus_pane(self, pane: str, mode: str = "") -> None:
         self.query_one(f"#{pane}", DataTable).focus()
 
 

@@ -1128,7 +1128,7 @@ async def test_a_shows_only_the_issues_with_a_run_and_back():
         await settle(app, pilot)
         assert keys(issues) == ["Munsik-Park/autoflow-coordinator", "Munsik-Park/autoflow-coordinator#3",
                                 "Munsik-Park/autoflow-sandbox", "Munsik-Park/autoflow-sandbox#3"]
-        assert app.query_one("#issues-pane").border_title == "Issues · running"
+        assert app.query_one("#issues-pane").border_title == "Workspaces · running"
         assert app.current.number == 3          # the cursor's workspace row is gone: the first issue
         issues.move_cursor(row=0)
         await pilot.press("enter")               # no folding in this mode
@@ -1139,7 +1139,7 @@ async def test_a_shows_only_the_issues_with_a_run_and_back():
         assert len(keys(issues)) == 4
         await pilot.press("a")
         await settle(app, pilot)
-        assert app.query_one("#issues-pane").border_title == "Issues"
+        assert app.query_one("#issues-pane").border_title == "Workspaces"
         assert "Munsik-Park/gone" in keys(issues) and "Munsik-Park/autoflow-coordinator#67" in keys(issues)
 
 
@@ -1151,6 +1151,31 @@ async def test_a_with_one_repository():
         await settle(app, pilot)
         issues = app.query_one("#issues", DataTable)
         assert [str(issues.get_row_at(i)[1]) for i in range(issues.row_count)] == ["3"]
+        assert app.query_one("#issues-pane").border_title == "Issues · running"
+
+
+def shown_keys(app):
+    """The footer's labels by key, as the active bindings give them."""
+    return {key: b.binding.description for key, b in app.active_bindings.items() if b.enabled and b.binding.show}
+
+
+async def test_the_left_pane_is_named_for_what_it_holds():
+    one = coordinated_app()
+    async with one.run_test() as pilot:
+        await settle(one, pilot)
+        assert one.query_one("#issues-pane").border_title == "Issues"
+        assert shown_keys(one)["1"] == "Issues"
+        assert [str(c.label) for c in one.query_one("#issues", DataTable).columns.values()] == ["", "#", "Title"]
+    every = every_app()
+    async with every.run_test(size=(121, 37)) as pilot:
+        await settle(every, pilot)
+        assert every.query_one("#issues-pane").border_title == "Workspaces"
+        assert shown_keys(every)["1"] == "Workspaces"
+        columns = every.query_one("#issues", DataTable).columns.values()
+        assert [str(c.label) for c in columns] == ["", "Workspace / Issue"]
+        every.query_one("#run", DataTable).focus()
+        await pilot.press("1")
+        assert every.focused is every.query_one("#issues", DataTable)
 
 
 async def test_hash_finds_a_listed_issue_in_a_folded_workspace():
