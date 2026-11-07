@@ -1,4 +1,5 @@
 from textual.widgets import DataTable, Input, Static
+from textual.worker import WorkerCancelled
 
 from autoflow_ide.app import IdeApp
 from autoflow_ide.model import Issue, Run, Session, Step
@@ -114,7 +115,11 @@ def coordinated_app(focuser=None, run_loader=None, **kw):
 
 
 async def settle(app, pilot):
-    await app.workers.wait_for_complete()
+    for worker in list(app.workers):
+        try:
+            await worker.wait()
+        except WorkerCancelled:
+            pass  # replaced by a newer worker of its exclusive group, as a 50 ms tick does (#16)
     await pilot.pause()
 
 
@@ -182,6 +187,21 @@ async def test_refresh_keeps_the_highlighted_issue():
         await settle(app, pilot)
         assert app.current.number == 4
         assert app.query_one("#issues", DataTable).cursor_row == 1
+
+
+async def test_a_redraw_before_a_key_press_is_handled_keeps_the_key():
+    # The key moves the cursor at once, and its RowHighlighted reaches the app later; a runs read redrawing the
+    # table in between must not move the cursor back to the issue shown before (#16).
+    app = coordinated_app()
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        table = app.query_one("#issues", DataTable)
+        assert (table.cursor_row, app.current.number) == (0, 3)
+        table.action_cursor_down()
+        assert (table.cursor_row, app.current.number) == (1, 3)
+        app.show_runs(app.runs)
+        await settle(app, pilot)
+        assert (table.cursor_row, app.current.number) == (1, 4)
 
 
 async def test_a_run_ending_reloads_the_issues():
