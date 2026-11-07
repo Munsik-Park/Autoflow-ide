@@ -1175,6 +1175,24 @@ async def test_a_workspace_row_shows_no_run_and_its_workspace():
         assert app.query_one("#run", DataTable).row_count == 1
 
 
+async def test_a_redraw_before_a_key_press_onto_a_workspace_row_is_handled_keeps_the_row():
+    # As for an issue row: a runs read redrawing the table before the key's RowHighlighted is handled keeps the
+    # cursor on the workspace row the key moved it to (#16).
+    app = every_app(runs=[SANDBOX_3])
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-coordinator#24"))
+        await pilot.pause()
+        assert app.current.number == 24
+        issues.action_cursor_down()
+        assert keys(issues)[issues.cursor_row] == "Munsik-Park/autoflow-sandbox" and app.current.number == 24
+        app.show_runs(app.runs)
+        await settle(app, pilot)
+        assert keys(issues)[issues.cursor_row] == "Munsik-Park/autoflow-sandbox"
+        assert app.on_header == "Munsik-Park/autoflow-sandbox" and app.current is None
+
+
 async def test_s_starts_the_issue_of_its_own_repository():
     started = []
 
