@@ -218,6 +218,9 @@ class IdeApp(App):
         self.current: Optional[Issue] = None
         # The repository of the workspace row the cursor is on, when it is on one.
         self.on_header: Optional[str] = None
+        # The row key of the issues table the cursor was last put on by render_issues, or last shown from a
+        # RowHighlighted: another key under the cursor means a key moved it and its message is still queued (#16).
+        self.placed: Optional[str] = None
         self.messages: Dict[str, str] = {}
         self.notice_sec = notice_sec
         # The timer that clears each notice slot.
@@ -336,8 +339,26 @@ class IdeApp(App):
         gave."""
         return [i for g in self.groups for i in self.shown(g)]
 
+    def cursor_key(self, table: DataTable) -> Optional[str]:
+        return table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value if table.row_count else None
+
+    def follow_cursor(self) -> None:
+        """Take the row a key moved the issues table's cursor to before its RowHighlighted is handled, so that a
+        rebuild of the table does not move the cursor back (#16). A caller with an intent of its own (a run that
+        starts, an issue found, a workspace folded) calls this first and then sets its intent, which wins."""
+        key = self.cursor_key(self.query_one("#issues", DataTable))
+        if self.placed is None or key is None or key == self.placed:
+            return
+        self.placed = key
+        if self.every and self.group_of(key):
+            self.on_header, self.current = key, None
+        else:
+            self.on_header = None
+            self.current = next((i for i in self.issues if self.row_key(i) == key), self.current)
+
     def render_issues(self) -> None:
         table = self.query_one("#issues", DataTable)
+        self.follow_cursor()
         rows: List[Tuple[Optional[str], List[Union[str, Text]]]] = []
         headers = self.headers()
         for group in self.groups:
@@ -367,6 +388,7 @@ class IdeApp(App):
                     self.on_header = header
                     table.move_cursor(row=table.get_row_index(header))
                     break
+        self.placed = self.cursor_key(table)
 
     def action_refresh_issues(self) -> None:
         if self.static:
@@ -508,6 +530,7 @@ class IdeApp(App):
         if any(self.started.pop(k, None) for k in after):
             self.set_message("start", "")  # the coordination session prepared the run
         self.folded -= {repository for repository, _ in started}  # a run that starts shows in its workspace
+        self.follow_cursor()
         if started and (self.current is None or self.current.run is None):
             # The operator is not looking at a run: move to the issue whose run just started.
             self.on_header = None
@@ -793,11 +816,15 @@ class IdeApp(App):
             # moves it back): showing that row would empty the run pane and lose its highlighted step (#65).
             return
         key = event.row_key.value
-        if self.every and self.group_of(key):
-            self.on_header = key
-            self.show_issue(None)
-            return
-        self.show_issue(next((i for i in self.issues if self.row_key(i) == key), None))
+        self.placed = key
+        try:
+            if self.every and self.group_of(key):
+                self.on_header = key
+                self.show_issue(None)
+                return
+            self.show_issue(next((i for i in self.issues if self.row_key(i) == key), None))
+        except NoMatches:
+            pass  # the app is closing: its widgets are gone (#16)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if event.data_table.id == "issues" and self.every and self.group_of(event.row_key.value):
@@ -880,6 +907,7 @@ class IdeApp(App):
         if self.running_only:
             self.action_toggle_running()
         self.folded.discard(group.repository)
+        self.follow_cursor()
         self.on_header = None
         self.current = issue
         self.show_issues()
@@ -899,6 +927,7 @@ class IdeApp(App):
             self.folded.discard(repository)
         else:
             self.folded.add(repository)
+        self.follow_cursor()
         self.on_header = repository
         self.render_issues()
         self.show_issue(self.current_in())
