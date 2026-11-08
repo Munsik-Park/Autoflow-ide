@@ -18,9 +18,9 @@ from autoflow_ide.focus import FocusError, focus_surface
 from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repository_from_workspace, workspace_issues
 from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
-from autoflow_ide.start import (Setting, StartError, Workspace, coordinator_base, coordinator_workspace,
-                               coordinator_workspace_entry, coordinator_workspaces, create_workspace, repository_of,
-                               setting_source, start_run)
+from autoflow_ide.start import (Setting, StartError, TokenError, Workspace, coordinator_base, coordinator_workspace,
+                               coordinator_workspace_entry, coordinator_workspaces, create_workspace, read_token,
+                               repository_of, setting_source, start_run)
 from autoflow_ide.state import chosen, read_recent, state_path, write_recent
 from autoflow_ide.tables import ColumnSpec, fill
 from autoflow_ide.version import ide_version
@@ -180,11 +180,12 @@ class IdeApp(App):
         self.creating: Dict[str, str] = {}
         self.state_file = state_file
         self.recent: List[str] = read_recent(state_file) if state_file else []
-        self.lookup = lookup or gh_issue
+        # Read with each workspace's gh-token when it has one (#74); given ones are used as they are.
+        self.lookup = lookup or self.gh_issue
         # Issues missing from the open list, by (repository, number): the looked-up issue, or None while looking
         # or after a failure (looked up again on the next refresh of the issues).
         self.lookups: Dict[IssueKey, Optional[Issue]] = {}
-        self.loader = loader or gh_issues
+        self.loader = loader or self.gh_issues
         self.run_loader = run_loader or coordinator_runs
         self.focuser = focuser or focus_surface
         self.starter = starter or start_run
@@ -201,6 +202,8 @@ class IdeApp(App):
         self.window_idle_sec = window_idle_sec
         # The workspace of the one repository, by name, as workspace_finder gave it.
         self.workspace: Optional[str] = None
+        # The workspaces read so far, by repository: where the issues of each are read with its gh-token.
+        self.workspaces_by_repository: Dict[str, Workspace] = {}
         self.workspace_reader = workspace_reader or coordinator_workspace_entry
         self.placer = placer or pane_places
         # Where each tmux pane is ("2:1 autoflow-coordinator#59"), by pane id, as last read.
@@ -280,6 +283,33 @@ class IdeApp(App):
 
     def group_of(self, repository: Optional[str]) -> Optional[Group]:
         return next((g for g in self.groups if g.repository == repository), None)
+
+    # Reading GitHub with each workspace's token (#74)
+
+    async def token_of(self, repository: str) -> Optional[str]:
+        """The gh-token of the workspace of `repository`, or None when there is no coordinator, no such workspace
+        or no gh-token: then gh reads with the account of the shell the IDE was started from, as before."""
+        if not self.coordinator:
+            return None
+        workspace = self.workspaces_by_repository.get(repository)
+        if workspace is None:
+            try:
+                workspace = await self.workspace_reader(self.coordinator, repository)
+            except StartError:
+                return None
+            self.workspaces_by_repository[repository] = workspace
+        if workspace.folder is None:
+            return None
+        try:
+            return read_token(workspace.folder)
+        except TokenError as e:
+            raise IssueSourceError(f"gh-token: {e}") from e
+
+    async def gh_issues(self, repository: str, limit: int = 100) -> List[Issue]:
+        return await gh_issues(repository, limit, token=await self.token_of(repository))
+
+    async def gh_issue(self, repository: str, number: int) -> Issue:
+        return await gh_issue(repository, number, token=await self.token_of(repository))
 
     def stamp(self, group: Group, issues: List[Issue]) -> None:
         """Make `issues` the open issues of `group`."""
@@ -436,6 +466,7 @@ class IdeApp(App):
             group = self.group_of(workspace.github) or Group(workspace.github)
             group.workspace = workspace
             groups.append(group)
+            self.workspaces_by_repository[workspace.github] = workspace
         found = await workspace_issues([g.repository for g in groups], loader=self.loader)
         failed = []
         for group in groups:
@@ -514,6 +545,7 @@ class IdeApp(App):
         group = self.groups[0]
         try:
             group.workspace = await self.workspace_reader(self.coordinator, self.repository)
+            self.workspaces_by_repository[self.repository] = group.workspace
         except StartError as e:
             group.workspace_error = str(e)
         try:

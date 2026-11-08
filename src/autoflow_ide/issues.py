@@ -1,8 +1,9 @@
 """Open issues of a repository, from GitHub through gh."""
 import asyncio
 import json
+import os
 from pathlib import Path
-from typing import Awaitable, Callable, Dict, List, Sequence, Union
+from typing import Awaitable, Callable, Dict, List, Optional, Sequence, Union
 
 from autoflow_ide.model import Issue
 
@@ -39,11 +40,13 @@ def parse_issue(text: str) -> Issue:
         raise IssueSourceError(f"unexpected gh output: {e}") from e
 
 
-async def run_gh(*args: str) -> str:
-    """The stdout of gh with `args`; on failure, the first line of its stderr as an IssueSourceError."""
+async def run_gh(*args: str, token: Optional[str] = None) -> str:
+    """The stdout of gh with `args`; on failure, the first line of its stderr as an IssueSourceError.
+    With `token`, gh runs with it as GH_TOKEN, which gh uses ahead of the account it is signed in with (#74)."""
+    env = dict(os.environ, GH_TOKEN=token) if token is not None else None
     try:
         proc = await asyncio.create_subprocess_exec(
-            "gh", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            "gh", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
     except FileNotFoundError as e:
         raise IssueSourceError("gh is not installed") from e
     out, err = await proc.communicate()
@@ -53,10 +56,11 @@ async def run_gh(*args: str) -> str:
     return out.decode()
 
 
-async def gh_issues(repository: str, limit: int = 100) -> List[Issue]:
-    """The open issues of `repository` (owner/name)."""
+async def gh_issues(repository: str, limit: int = 100, token: Optional[str] = None) -> List[Issue]:
+    """The open issues of `repository` (owner/name), read with `token` when given."""
     return parse_issue_list(await run_gh(
-        "issue", "list", "--repo", repository, "--state", "open", "--limit", str(limit), "--json", FIELDS))
+        "issue", "list", "--repo", repository, "--state", "open", "--limit", str(limit), "--json", FIELDS,
+        token=token))
 
 
 async def workspace_issues(repositories: Sequence[str],
@@ -73,9 +77,9 @@ async def workspace_issues(repositories: Sequence[str],
     return dict(zip(repositories, results))
 
 
-async def gh_issue(repository: str, number: int) -> Issue:
-    """Issue `number` of `repository`, open or closed."""
-    return parse_issue(await run_gh("api", f"repos/{repository}/issues/{number}", "--jq", ISSUE_JQ))
+async def gh_issue(repository: str, number: int, token: Optional[str] = None) -> Issue:
+    """Issue `number` of `repository`, open or closed, read with `token` when given."""
+    return parse_issue(await run_gh("api", f"repos/{repository}/issues/{number}", "--jq", ISSUE_JQ, token=token))
 
 
 def repository_from_workspace(workspace: str) -> str:

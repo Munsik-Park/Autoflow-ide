@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from autoflow_ide.issues import (RECENT_ISSUES, IssueSourceError, gh_issues, parse_issue_list, repository_from_workspace,
-                                 workspace_issues)
+from autoflow_ide.issues import (RECENT_ISSUES, IssueSourceError, gh_issue, gh_issues, parse_issue_list,
+                                 repository_from_workspace, workspace_issues)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 RECORDED = (FIXTURES / "gh-issue-list.json").read_text()
@@ -20,7 +20,8 @@ def fake_gh(tmp_path, monkeypatch, stdout="", stderr="", status=0):
     (tmp_path / "out").write_text(stdout)
     (tmp_path / "err").write_text(stderr)
     gh = tmp_path / "gh"
-    gh.write_text(f'#!/bin/sh\necho "$@" > "{tmp_path}/args"\ncat "{tmp_path}/out"\ncat "{tmp_path}/err" >&2\nexit {status}\n')
+    gh.write_text(f'#!/bin/sh\necho "$@" > "{tmp_path}/args"\necho "${{GH_TOKEN-unset}}" > "{tmp_path}/token"\n'
+                  f'cat "{tmp_path}/out"\ncat "{tmp_path}/err" >&2\nexit {status}\n')
     gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
     return tmp_path / "args"
@@ -112,6 +113,22 @@ async def test_gh_issue_asks_the_rest_api(tmp_path, monkeypatch):
     assert issue.closed
     assert args.read_text().split()[:3] == ["api", "repos/Munsik-Park/autoflow-sandbox/issues/3", "--jq"]
     assert "pull: (.pull_request != null)" in args.read_text()
+
+
+async def test_gh_reads_with_the_token_given_and_otherwise_as_the_shell_does(tmp_path, monkeypatch):
+    # A workspace's gh-token reaches gh as GH_TOKEN, which gh uses ahead of its signed-in account (#74).
+    args = fake_gh(tmp_path, monkeypatch, stdout=RECORDED)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    await gh_issues("Munsik-Park/Autoflow-ide", token="tok-a")
+    assert (tmp_path / "token").read_text().strip() == "tok-a"
+    fake_gh(tmp_path, monkeypatch, stdout=CLOSED)
+    await gh_issue("Munsik-Park/autoflow-sandbox", 3, token="tok-b")
+    assert (tmp_path / "token").read_text().strip() == "tok-b"
+    await gh_issue("Munsik-Park/autoflow-sandbox", 3)
+    assert (tmp_path / "token").read_text().strip() == "unset"
+    monkeypatch.setenv("GH_TOKEN", "from-the-shell")
+    await gh_issue("Munsik-Park/autoflow-sandbox", 3)
+    assert (tmp_path / "token").read_text().strip() == "from-the-shell"
 
 
 async def test_gh_issue_not_found(tmp_path, monkeypatch):
