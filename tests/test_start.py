@@ -4,9 +4,9 @@ import stat
 
 import pytest
 
-from autoflow_ide.start import (Setting, StartError, Workspace, coordinator_base, coordinator_workspaces,
+from autoflow_ide.start import (Setting, StartError, TokenError, Workspace, coordinator_base, coordinator_workspaces,
                                 create_workspace, repository_of, workspace_instruction, find_workspace, find_workspace_entry, instruction, list_workspaces, open_coordination,
-                                parse_config, setting_source, start_run, workspace_base)
+                                parse_config, read_token, setting_source, start_run, workspace_base)
 
 FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
 
@@ -227,3 +227,74 @@ async def test_coordinator_base_from_config_py(tmp_path):
         await coordinator_base(str(tmp_path / "clone"))
     with pytest.raises(StartError, match="no .*config.py"):
         await coordinator_base(str(tmp_path / "nowhere"))
+
+
+# A workspace's gh-token (#74), as the coordinator reads it (autoflow-coordinator#71, tools/prepare.py read_token).
+
+def token(folder, content, mode=0o600):
+    path = folder / "gh-token"
+    path.write_text(content, newline="")
+    path.chmod(mode)
+    return path
+
+
+def test_read_token(tmp_path):
+    assert read_token(tmp_path) is None  # no gh-token: as before the workspace had one
+    token(tmp_path, "github_pat_abc\n")
+    assert read_token(tmp_path) == "github_pat_abc"
+    token(tmp_path, "github_pat_abc")
+    assert read_token(tmp_path) == "github_pat_abc"
+
+
+@pytest.mark.parametrize("content, mode, message", [
+    ("github_pat_abc\n", 0o644, "readable by you only: chmod 600"),
+    ("", 0o600, "is empty"),
+    ("\n", 0o600, "is empty"),
+    ("github_pat_abc\r\n", 0o600, "not one token alone on one line"),
+    ("github_pat_abc\n\n", 0o600, "not one token alone on one line"),
+    ("github pat\n", 0o600, "not one token alone on one line"),
+])
+def test_a_gh_token_the_coordinator_would_refuse(tmp_path, content, mode, message):
+    token(tmp_path, content, mode)
+    with pytest.raises(TokenError, match=message) as e:
+        read_token(tmp_path)
+    assert "github_pat_abc" not in str(e.value)
+
+
+def test_a_gh_token_that_is_not_a_file(tmp_path):
+    (tmp_path / "gh-token").mkdir()
+    with pytest.raises(TokenError, match="not a regular file"):
+        read_token(tmp_path)
+
+
+async def test_opens_claude_with_the_token_read_from_its_file(tmp_path, monkeypatch):
+    # The typed line reads the file, as the coordinator's tools/launch.sh does: the token is neither typed nor
+    # in tmux's arguments.
+    log = fake_tmux(tmp_path, monkeypatch)
+    await open_coordination("/coord", "w#1", "Workspace w, issue #1.", tmp_path / "my base" / "gh-token")
+    assert log.read_text().splitlines()[1] == (
+        f"send-keys -t %7 -l -- GH_TOKEN=$(cat '{tmp_path}/my base/gh-token') claude 'Workspace w, issue #1.'")
+
+
+async def test_start_run_with_the_workspaces_token(tmp_path, monkeypatch):
+    base = tmp_path / "base"
+    workspace(base, "autoflow-sandbox", "Munsik-Park/autoflow-sandbox")
+    token(base / "autoflow-sandbox", "github_pat_abc\n")
+    clone = coordinator_clone(tmp_path, base)
+    log = fake_tmux(tmp_path, monkeypatch)
+    assert await start_run(clone, "Munsik-Park/autoflow-sandbox", 4) == "%7"
+    calls = log.read_text()
+    assert f"GH_TOKEN=$(cat {base}/autoflow-sandbox/gh-token) claude 'Workspace autoflow-sandbox, issue #4.'" in calls
+    assert "github_pat_abc" not in calls
+
+
+async def test_start_run_opens_nothing_with_a_gh_token_it_cannot_use(tmp_path, monkeypatch):
+    base = tmp_path / "base"
+    workspace(base, "autoflow-sandbox", "Munsik-Park/autoflow-sandbox")
+    token(base / "autoflow-sandbox", "github_pat_abc\n", 0o644)
+    clone = coordinator_clone(tmp_path, base)
+    log = fake_tmux(tmp_path, monkeypatch)
+    with pytest.raises(StartError, match="chmod 600") as e:
+        await start_run(clone, "Munsik-Park/autoflow-sandbox", 4)
+    assert "github_pat_abc" not in str(e.value)
+    assert not log.exists()

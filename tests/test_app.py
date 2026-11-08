@@ -1763,3 +1763,44 @@ async def test_the_run_table_scrolls_to_a_step_below_the_pane():
         assert steps.cursor_row == 22 and steps.scroll_y > 0           # the table scrolled
         top = steps.scroll_y
         assert top <= 22 < top + steps.size.height - 1                 # step 23 is in view (below the header row)
+
+
+# Reading each workspace's issues with its own gh-token (#74).
+
+import os
+import stat
+
+
+async def test_each_workspace_is_read_with_its_own_token(tmp_path, monkeypatch):
+    log = tmp_path / "gh-calls"
+    gh = tmp_path / "bin" / "gh"
+    gh.parent.mkdir()
+    gh.write_text(f'#!/bin/sh\necho "$4 ${{GH_TOKEN-unset}}" >> "{log}"\necho "[]"\n')
+    gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(gh.parent) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("GH_TOKEN", "the-shells")
+    folders = {name: tmp_path / name for name in ("mine", "theirs", "loose", "none")}
+    for name, folder in folders.items():
+        folder.mkdir()
+    for name, mode in (("mine", 0o600), ("theirs", 0o600), ("loose", 0o644)):
+        (folders[name] / "gh-token").write_text(f"tok-{name}\n")
+        (folders[name] / "gh-token").chmod(mode)
+    workspaces = [WorkspaceEntry(name, f"{name}-owner/{name}", None, None, folder=folder)
+                  for name, folder in folders.items()]
+
+    async def read_workspaces(coordinator):
+        return workspaces
+
+    async def no_runs(coordinator):
+        return []
+
+    app = IdeApp(coordinator="/c", run_loader=no_runs, workspaces_reader=read_workspaces,
+                 state_file=tmp_path / "state.json")
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        calls = sorted(log.read_text().splitlines())
+        # Each with its own; one without a gh-token as before, with the shell's; one that cannot be used is not read.
+        assert calls == ["mine-owner/mine tok-mine", "none-owner/none the-shells", "theirs-owner/theirs tok-theirs"]
+        issues = app.query_one("#issues", DataTable)
+        assert str(issues.get_cell("loose-owner/loose", "title")).startswith("loose: gh-token:")
+        assert "chmod 600" in status(app) and "tok-loose" not in status(app)

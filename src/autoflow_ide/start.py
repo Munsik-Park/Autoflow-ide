@@ -11,8 +11,9 @@ import json
 import os
 import re
 import shlex
+import stat
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -97,6 +98,8 @@ class Workspace:
     github: str
     clone: Optional[str] = None
     base_branch: Optional[str] = None
+    # The workspace's folder in the base, where its gh-token is (#74).
+    folder: Optional[Path] = field(default=None, compare=False)
 
 
 def list_workspaces(base: Path) -> List[Workspace]:
@@ -113,8 +116,53 @@ def list_workspaces(base: Path) -> List[Workspace]:
             continue
         clone, branch = values.get("clone"), values.get("base_branch")
         found.append(Workspace(repo_json.parent.name, github, clone if isinstance(clone, str) else None,
-                               branch if isinstance(branch, str) else None))
+                               branch if isinstance(branch, str) else None, folder=repo_json.parent))
     return found
+
+
+# A workspace's GitHub token (the coordinator's WORKSPACE.md > gh-token, autoflow-coordinator#71): a file in the
+# workspace's folder, the caller's own with no group or other permission, holding the token alone on one line. The
+# coordinator starts a run only when the coordination session's GH_TOKEN is that token (#74).
+TOKEN_FILE = "gh-token"
+
+
+class TokenError(Exception):
+    """A workspace's gh-token cannot be used; the message names the file, never the token."""
+
+
+def read_token(folder: Path) -> Optional[str]:
+    """The token of the workspace in `folder`, or None when it has no gh-token. A gh-token the coordinator would
+    refuse (its tools/prepare.py read_token) raises TokenError."""
+    path = folder / TOKEN_FILE
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise TokenError(f"{path}: {e.strerror}") from e
+    if not stat.S_ISREG(st.st_mode):
+        raise TokenError(f"{path} is not a regular file")
+    if st.st_uid != os.getuid() or st.st_mode & 0o077:
+        raise TokenError(f"{path} must be yours and readable by you only: chmod 600 {path}")
+    try:
+        with open(path, newline="") as f:
+            content = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        raise TokenError(f"{path}: cannot be read") from e
+    token = content[:-1] if content.endswith("\n") else content
+    if not token:
+        raise TokenError(f"{path} is empty")
+    if re.search(r"\s", token):
+        raise TokenError(f"{path}: not one token alone on one line")
+    return token
+
+
+def token_file(workspace: Workspace) -> Optional[Path]:
+    """The workspace's gh-token when it has a usable one, None when it has none; TokenError when it has one that
+    cannot be used."""
+    if workspace.folder is None or read_token(workspace.folder) is None:
+        return None
+    return workspace.folder / TOKEN_FILE
 
 
 def find_workspace_entry(base: Path, repository: str) -> Workspace:
@@ -141,9 +189,11 @@ def window_name(workspace: str, issue: int) -> str:
     return f"{workspace}#{issue}"
 
 
-async def open_coordination(coordinator: str, name: str, text: str) -> str:
+async def open_coordination(coordinator: str, name: str, text: str, token: Optional[Path] = None) -> str:
     """Open a tmux window named `name` with a shell in the coordinator clone, start Claude Code there with
-    `text` as its first prompt, and return the new pane's id. tmux moves to the new window."""
+    `text` as its first prompt, and return the new pane's id. tmux moves to the new window.
+    With `token` (a workspace's gh-token), Claude Code starts with that token as GH_TOKEN: the typed line reads
+    the file, as the coordinator's tools/launch.sh does, so the token is neither typed nor in tmux's arguments."""
     if not os.environ.get("TMUX"):
         raise StartError("not inside tmux")
     clone = str(Path(coordinator).expanduser())
@@ -151,7 +201,10 @@ async def open_coordination(coordinator: str, name: str, text: str) -> str:
     if not pane.startswith("%"):
         raise StartError(f"tmux new-window: no pane id ({pane!r})")
     # As the coordinator's tmux terminal types a line: literal keys, then Enter.
-    await run("tmux", "send-keys", "-t", pane, "-l", "--", f"claude {shlex.quote(text)}")
+    line = f"claude {shlex.quote(text)}"
+    if token is not None:
+        line = f"GH_TOKEN=$(cat {shlex.quote(str(token))}) {line}"
+    await run("tmux", "send-keys", "-t", pane, "-l", "--", line)
     await run("tmux", "send-keys", "-t", pane, "Enter")
     return pane
 
@@ -172,9 +225,15 @@ async def coordinator_workspace_entry(coordinator: str, repository: str) -> Work
 
 
 async def start_run(coordinator: str, repository: str, issue: int) -> str:
-    """Open the coordination session for `issue` of `repository`; returns its pane id."""
-    workspace = await coordinator_workspace(coordinator, repository)
-    return await open_coordination(coordinator, window_name(workspace, issue), instruction(workspace, issue))
+    """Open the coordination session for `issue` of `repository`, with its workspace's token when it has one;
+    returns its pane id. Nothing is opened when the workspace's gh-token cannot be used."""
+    workspace = await coordinator_workspace_entry(coordinator, repository)
+    try:
+        token = token_file(workspace)
+    except TokenError as e:
+        raise StartError(str(e)) from e
+    return await open_coordination(coordinator, window_name(workspace.name, issue),
+                                   instruction(workspace.name, issue), token)
 
 
 # Adding a workspace: the operator gives the repository; the coordination session asks for the rest (the clone, the
