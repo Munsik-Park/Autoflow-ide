@@ -664,11 +664,12 @@ from autoflow_ide.windows import Window
 
 
 class FakeWindows:
-    """Windows by issue; `screens` gives each issue's screens in turn, then the last one."""
+    """Windows by issue; `screens` gives each issue's screens in turn, then the last one. A screen is a string,
+    the window's one pane, or a list of its panes' screens (#79)."""
 
     def __init__(self, numbers, screens=None):
         self.open = {n: Window(f"@{n}", f"autoflow-sandbox#{n}", [f"%{n}"]) for n in numbers}
-        self.screens = screens or {}
+        self.given = screens or {}
         self.reads = {}
         self.closed = []
 
@@ -676,11 +677,14 @@ class FakeWindows:
         assert workspace == "autoflow-sandbox"
         return dict(self.open)
 
-    async def screen(self, window):
+    async def screens(self, window):
         number = int(window.name.split("#")[1])
         self.reads[number] = self.reads.get(number, 0) + 1
-        shown = self.screens.get(number, ["> "])
-        return shown[min(self.reads[number], len(shown)) - 1]
+        shown = self.given.get(number, ["> "])
+        screen = shown[min(self.reads[number], len(shown)) - 1]
+        if isinstance(screen, Exception):
+            raise screen
+        return [screen] if isinstance(screen, str) else list(screen)
 
     async def close(self, window):
         number = int(window.name.split("#")[1])
@@ -806,13 +810,13 @@ class TimedWindows(FakeWindows):
         self.closed_at = {}
         self.last = {}
 
-    async def screen(self, window):
-        shown = await super().screen(window)
+    async def screens(self, window):
+        shown = "\n".join(await super().screens(window))
         number = int(window.name.split("#")[1])
         if self.last.get(number) != shown:
             self.last[number] = shown
             self.changed[number] = time.monotonic()
-        return shown
+        return [shown]
 
     async def close(self, window):
         self.closed_at[int(window.name.split("#")[1])] = time.monotonic()
@@ -1219,8 +1223,8 @@ class EveryWindows(FakeWindows):
     async def find(self, workspace):
         return {n: w for (ws, n), w in self.open.items() if ws == workspace}
 
-    async def screen(self, window):
-        return "still"
+    async def screens(self, window):
+        return ["still"]
 
     async def close(self, window):
         self.closed.append(window.name)
@@ -1804,3 +1808,216 @@ async def test_each_workspace_is_read_with_its_own_token(tmp_path, monkeypatch):
         issues = app.query_one("#issues", DataTable)
         assert str(issues.get_cell("loose-owner/loose", "title")).startswith("loose: gh-token:")
         assert "chmod 600" in status(app) and "tok-loose" not in status(app)
+
+
+# The waiting mark: an issue whose coordination session window shows a prompt, or whose run has a work session
+# in waiting-input (#79).
+
+from rich.cells import cell_len
+
+from autoflow_ide.app import FOLDED_MARK, UNFOLDED_MARK, WAIT_MARK
+from autoflow_ide.windows import WindowError
+
+SCREENS = Path(__file__).parent / "fixtures" / "screens"
+CHOICE = (SCREENS / "choice-prompt.txt").read_text()
+PERMISSION = (SCREENS / "permission-prompt.txt").read_text()
+WORKING = (SCREENS / "working.txt").read_text()
+TURN_END = (SCREENS / "turn-end.txt").read_text()
+
+
+def marks(app):
+    issues = app.query_one("#issues", DataTable)
+    return {key: str(issues.get_cell(key, "run")) for key in keys(issues)}
+
+
+def sandbox_run(*states, number=3, key="k"):
+    return Run(f"autoflow-sandbox-{number}-{key}", [Step("analysis", "running")],
+               [Session(f"S{n}", state) for n, state in enumerate(states, 1)], issue=str(number))
+
+
+def waiting_app(windows, runs=(), **kw):
+    """Issues 4 and 3 of autoflow-sandbox; the window check runs only when a test calls check()."""
+    return windows_app(windows, [Issue(4, "four"), Issue(3, "three")], runs, lookup_states({}, []), check=100, **kw)
+
+
+async def check(app, pilot):
+    app.check_windows()
+    await settle(app, pilot)
+
+
+def test_the_wait_mark_is_one_cell_and_unlike_the_other_marks():
+    assert cell_len(WAIT_MARK) == 1
+    assert WAIT_MARK not in (RUN_MARK, UNFOLDED_MARK, FOLDED_MARK, "")
+
+
+async def test_a_window_showing_the_workflow_choice_marks_its_issue_within_one_check():
+    windows = FakeWindows([3, 4], {3: [CHOICE], 4: [PERMISSION]})
+    app = waiting_app(windows, [sandbox_run("working")])
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        assert marks(app) == {"3": RUN_MARK, "4": ""}
+        await check(app, pilot)
+        assert windows.reads == {3: 1, 4: 1}
+        # In place of ● for the issue with a run; for the one without, before its run is prepared.
+        assert marks(app) == {"3": WAIT_MARK, "4": WAIT_MARK}
+        assert keys(app.query_one("#issues", DataTable)) == ["3", "4"]     # the order is unchanged
+
+
+async def test_an_issue_started_with_s_is_marked_before_its_run_is_prepared():
+    async def starter(coordinator, repository, number):
+        return "%4"
+
+    windows = FakeWindows([], {4: [CHOICE]})
+    app = waiting_app(windows, [sandbox_run("working")], starter=starter)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.press("down", "s")
+        await settle(app, pilot)
+        assert ("Munsik-Park/autoflow-sandbox", 4) in app.started
+        windows.open[4] = Window("@4", "autoflow-sandbox#4", ["%4"])   # the window `s` opened
+        await check(app, pilot)
+        assert marks(app)["4"] == WAIT_MARK
+
+
+async def test_the_earlier_mark_returns_on_the_check_after_the_answer():
+    windows = FakeWindows([3, 4], {3: [CHOICE, WORKING], 4: [CHOICE, TURN_END]})
+    app = waiting_app(windows, [sandbox_run("working")])
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await check(app, pilot)
+        assert marks(app) == {"3": WAIT_MARK, "4": WAIT_MARK}
+        await check(app, pilot)
+        assert marks(app) == {"3": RUN_MARK, "4": ""}
+
+
+async def test_a_window_waits_when_any_of_its_panes_shows_a_prompt():
+    windows = FakeWindows([3, 4], {3: [[CHOICE, TURN_END], [TURN_END, WORKING]], 4: [[TURN_END, CHOICE]]})
+    app = waiting_app(windows, [sandbox_run("working")])
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await check(app, pilot)
+        assert marks(app) == {"3": WAIT_MARK, "4": WAIT_MARK}
+        await check(app, pilot)
+        assert marks(app) == {"3": RUN_MARK, "4": WAIT_MARK}
+
+
+async def test_a_screen_that_cannot_be_read_keeps_its_mark_and_a_window_that_is_gone_drops_it():
+    windows = FakeWindows([3, 4], {3: [CHOICE, WindowError("can't find pane: %3"), WORKING], 4: [CHOICE]})
+    app = waiting_app(windows, [sandbox_run("working")])
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await check(app, pilot)
+        assert marks(app) == {"3": WAIT_MARK, "4": WAIT_MARK}
+        del windows.open[4]                       # its window was closed by hand
+        await check(app, pilot)
+        assert marks(app) == {"3": WAIT_MARK, "4": ""}
+        assert "autoflow-sandbox#3: can't find pane: %3" in status(app)
+        await check(app, pilot)
+        assert marks(app) == {"3": RUN_MARK, "4": ""}
+
+
+async def test_a_failed_listing_of_the_windows_keeps_the_marks():
+    windows = FakeWindows([3], {3: [CHOICE]})
+    app = waiting_app(windows, [sandbox_run("working")])
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await check(app, pilot)
+
+        async def find(workspace):
+            raise WindowError("no server running on /tmp/tmux-501/default")
+
+        windows.find = find
+        await check(app, pilot)
+        assert marks(app)["3"] == WAIT_MARK
+        assert "windows: no server running" in status(app)
+
+
+async def test_a_work_session_waiting_for_input_marks_its_issue():
+    state = {"runs": [sandbox_run("working", "waiting-input")]}
+    app = waiting_app(FakeWindows([]), lambda: state["runs"])
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        assert marks(app) == {"3": WAIT_MARK, "4": ""}
+        for states in (("working", "turn-end"), ("exited",)):
+            state["runs"] = [sandbox_run(*states)]
+            app.refresh_runs()
+            await settle(app, pilot)
+            assert marks(app) == {"3": RUN_MARK, "4": ""}
+        # The issue shows its first run; a second run of it with a session waiting marks it too.
+        state["runs"] = [sandbox_run("working"), sandbox_run("waiting-input", key="j")]
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert app.current.run.name == "autoflow-sandbox-3-k"
+        assert marks(app) == {"3": WAIT_MARK, "4": ""}
+
+
+async def test_a_recorded_status_with_a_session_waiting_for_input_marks_its_issue():
+    runs = parse_status((Path(__file__).parent / "fixtures" / "status-waiting.json").read_text())
+    app = windows_app(FakeWindows([]), [Issue(5, "five"), Issue(4, "four")], runs, lookup_states({}, []), check=100)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        assert marks(app) == {"5": WAIT_MARK, "4": ""}
+
+
+async def test_either_source_holds_the_mark():
+    state = {"runs": [sandbox_run("waiting-input")]}
+    windows = FakeWindows([3], {3: [CHOICE, CHOICE, WORKING]})
+    app = waiting_app(windows, lambda: state["runs"])
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await check(app, pilot)
+        state["runs"] = [sandbox_run("working")]          # the work session was answered; the window still waits
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert marks(app)["3"] == WAIT_MARK
+        state["runs"] = [sandbox_run("waiting-input")]    # and now the other way round
+        app.refresh_runs()
+        await check(app, pilot)
+        await check(app, pilot)
+        assert marks(app)["3"] == WAIT_MARK
+        state["runs"] = [sandbox_run("working")]
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert marks(app)["3"] == RUN_MARK
+
+
+async def test_the_check_that_marks_an_issue_does_not_move_the_cursor():
+    windows = FakeWindows([3], {3: [CHOICE]})
+    app = waiting_app(windows, [sandbox_run("working")])
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.press("down")
+        await settle(app, pilot)
+        await check(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        assert marks(app)["3"] == WAIT_MARK
+        assert app.current.number == 4 and app.cursor_key(issues) == "4"
+
+
+async def test_every_workspace_marks_the_issue_of_its_own_repository():
+    class ChoiceWindows(EveryWindows):
+        async def screens(self, window):
+            return [CHOICE if window.name == "autoflow-sandbox#4" else TURN_END]
+
+    windows = ChoiceWindows({("autoflow-sandbox", 4): Window("@1", "autoflow-sandbox#4", ["%1"]),
+                             ("autoflow-coordinator", 67): Window("@2", "autoflow-coordinator#67", ["%2"])})
+    waiting_run = Run("autoflow-coordinator-24-k", [Step("review", "running")], [Session("S1", "waiting-input")],
+                      issue="24")
+    app = every_app(runs=[waiting_run], windows=windows, window_check_sec=100)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        await check(app, pilot)
+        shown = marks(app)
+        assert shown["Munsik-Park/autoflow-sandbox#4"] == WAIT_MARK
+        assert shown["Munsik-Park/autoflow-coordinator#24"] == WAIT_MARK
+        assert shown["Munsik-Park/autoflow-coordinator#67"] == ""
+        assert shown["Munsik-Park/autoflow-sandbox#3"] == ""
+
+
+async def test_given_issues_show_a_waiting_session():
+    issues = [Issue(1, "first", Run("run-1", [Step("analysis", "running")], [Session("S1", "waiting-input")])),
+              Issue(2, "second", Run("run-2", [Step("analysis", "running")], [Session("S1", "working")]))]
+    app = IdeApp(issues=issues, repository="owner/repo")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert marks(app) == {"1": WAIT_MARK, "2": RUN_MARK}

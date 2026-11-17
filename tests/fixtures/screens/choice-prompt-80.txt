@@ -1,0 +1,37 @@
+
+ ▐▛███▛█   Claude Code v2.1.326
+▝▜██████▀  Opus 5.5 with high effort · Claude Plan
+ ▝▝   ▝▝   ~/coordinator
+
+
+❯ Workspace autoflow-ide, issue #80.
+
+  Read 2 files, ran 4 shell commands
+
+⏺ 워크스페이스·이슈 확인 완료. 과거 run 기록을 확인해 workflow 초안을 잡는 중입니다.
+
+  Searched for 1 pattern, ran 2 shell commands
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Workflow
+
+│ autoflow-ide #80(번호로 찾은 이슈의 state를 이슈 재조회 시 갱신) workflow를 무엇으로 하시겠습니까? 근거:
+│ issue에 Scope 1항목과 Done when 2개가 명시되어 criterion review가 불필요하고, 이 workspace의 과거 run(#16,
+│ #28)도 analysis-review로 진행됨. 품질 목표: hypothesis contract 기준치 + Medium 이상 recommendation 없음,
+│ review Medium 이상 finding 없음. coordination.md의 issue 번호 주석 규칙 적용.
+
+❯ 1. analysis-review (Recommended)
+     S1: analysis·criteria-apply·hypothesis / S2: AutoFlow 밖에서 구현·PR / S3: review. criterion review 생략
+  2. full
+     analysis → design·plan → build·audit·quality → delivery·ci·review 전 과정 (criterion review 생략)
+  3. full + criterion review
+     criterion review group 포함 전체 과정
+  4. Type something.
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+
+
+
+
+

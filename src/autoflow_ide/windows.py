@@ -64,9 +64,13 @@ class TmuxWindows:
             return {}
         return parse_panes(await tmux("list-panes", "-a", "-F", PANES_FORMAT), workspace)
 
+    async def screens(self, window: Window) -> List[str]:
+        """What each of the window's panes shows, in order: a prompt is judged per pane (#79)."""
+        return [await tmux("capture-pane", "-p", "-t", pane) for pane in window.panes]
+
     async def screen(self, window: Window) -> str:
         """What the window's panes show."""
-        return "\n".join([await tmux("capture-pane", "-p", "-t", pane) for pane in window.panes])
+        return "\n".join(await self.screens(window))
 
     async def close(self, window: Window) -> None:
         await tmux("kill-window", "-t", window.id)
