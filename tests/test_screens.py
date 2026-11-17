@@ -41,7 +41,7 @@ def test_a_recorded_working_screen_or_empty_input_area_does_not_wait(name):
 
 
 def test_the_recorded_input_area_holds_the_prompt_and_a_no_break_space():
-    # What tells it from a dialog's cursor (`❯ 1.`) and a submitted prompt's echo (`❯ Workspace ...`).
+    # As recorded: the empty input area is `❯` and a no-break space; the choice prompt's cursor is `❯` and a space.
     for name in INPUT_AREAS:
         assert f"\n❯{NBSP}\n" in screen(name)
     assert f"❯{NBSP}" not in screen("choice-prompt.txt") and "❯ 1. analysis-review" in screen("choice-prompt.txt")
