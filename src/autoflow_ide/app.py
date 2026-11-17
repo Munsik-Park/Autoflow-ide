@@ -89,7 +89,8 @@ class Group:
     # The open issues as listed, and those with the runs attached plus a row per run whose issue is not listed.
     open_issues: List[Issue] = field(default_factory=list)
     issues: List[Issue] = field(default_factory=list)
-    # An issue found by its number (`#`), shown after its own until the next find or Esc.
+    # An issue found by its number (`#`), shown after its own until the next find or Esc; read again at the end
+    # of each read of the issues, and changed in place, so its row and the status line say what it is now (#80).
     extra: List[Issue] = field(default_factory=list)
     # Whether its open issues have been read: until then, an issue with a run cannot be told to be missing.
     listed: bool = False
@@ -191,6 +192,9 @@ class IdeApp(App):
         # Issues missing from the open list, by (repository, number): the looked-up issue, or None while looking
         # or after a failure (looked up again on the next refresh of the issues).
         self.lookups: Dict[IssueKey, Optional[Issue]] = {}
+        # Why a found issue could not be read again, by (repository, number), until a later read of it succeeds,
+        # Esc clears it or a new find replaces it: shown on the status line in a slot of its own, "found" (#80).
+        self.found_failures: Dict[IssueKey, str] = {}
         self.loader = loader or self.gh_issues
         self.run_loader = run_loader or coordinator_runs
         self.focuser = focuser or focus_surface
@@ -337,6 +341,7 @@ class IdeApp(App):
         self.attach_runs()
         self.render_issues()
         self.show_issue(self.current_in())
+        self.show_found_failures()
 
     def row_key(self, issue: Issue) -> str:
         return f"{issue.repository}#{issue.number}" if self.every else str(issue.number)
@@ -473,7 +478,8 @@ class IdeApp(App):
                 self.set_issues(issues)
             self.set_message("issues", message)
         except NoMatches:
-            pass  # the app is closing: its widgets are gone
+            return  # the app is closing: its widgets are gone
+        await self.read_found()  # also when the list could not be read (#80)
 
     async def load_every(self) -> None:
         """Read the workspaces of the base again, then the most recent open issues of each."""
@@ -481,6 +487,7 @@ class IdeApp(App):
             workspaces = await self.workspaces_reader(self.coordinator)
         except StartError as e:
             self.set_message("issues", f"workspaces: {e}")
+            await self.read_found()  # the workspaces as last read (#80)
             return
         groups: List[Group] = []
         for workspace in workspaces:
@@ -518,7 +525,55 @@ class IdeApp(App):
             self.set_message("issues", "; ".join(failed) if failed
                              else f"{len(self.open_issues)} recent open issues in {len(groups)} workspaces")
         except NoMatches:
+            return  # the app is closing: its widgets are gone
+        await self.read_found()  # also for a workspace whose list could not be read (#80)
+
+    # Issues found by their number, read again at the end of each read of the issues (#80)
+
+    def held_found(self) -> List[Tuple[Group, Issue]]:
+        """The found issues shown from the copy held when found: those whose number the open list of their
+        workspace does not show. One the list shows is drawn from the list (#80)."""
+        return [(g, i) for g in self.groups for i in g.extra
+                if i.number not in {o.number for o in g.open_issues}]
+
+    async def read_found(self) -> None:
+        """Read the found issues the list just applied does not show again, one after another, in the worker
+        that read the list: that work runs one at a time (group "issues", exclusive), so each issue has one read
+        out and the results apply in the order they come back (#80)."""
+        changed = False
+        for group, held in self.held_found():
+            key = issue_key(held)
+            try:
+                result: Union[Issue, IssueSourceError] = await self.lookup(group.repository, held.number)
+            except IssueSourceError as e:
+                result = e
+            if not any(i is held for i in group.extra) or not any(g is group for g in self.groups):
+                continue  # cleared by Esc or replaced by a new find while it was read: not brought back (#80)
+            if isinstance(result, IssueSourceError):
+                self.found_failures[key] = f"issue {self.label(key)}: {result}"  # it keeps what it had (#80)
+                continue
+            self.found_failures.pop(key, None)
+            if (held.state, held.title, held.pull) != (result.state, result.title, result.pull):
+                # In place, so the highlighted issue stays the same one and keeps its repository and run (#80).
+                held.state, held.title, held.pull = result.state, result.title, result.pull
+                changed = True
+        try:
+            if changed:
+                self.show_issues()
+            else:
+                self.show_found_failures()
+        except NoMatches:
             pass  # the app is closing: its widgets are gone
+
+    def show_found_failures(self) -> None:
+        """Put on the status line why found issues could not be read again, for those still shown from their
+        held copy: the failure of one cleared by Esc, replaced by a new find, or now shown from the open list
+        goes (#80)."""
+        held = {issue_key(i) for _, i in self.held_found()}
+        self.found_failures = {k: m for k, m in self.found_failures.items() if k in held}
+        message = "; ".join(self.found_failures.values())
+        if message != self.messages.get("found", ""):
+            self.set_message("found", message)
 
     # Runs
 
@@ -978,6 +1033,7 @@ class IdeApp(App):
                 return
             found.repository = repository
             group.extra = [found]
+            self.found_failures.pop(key, None)  # a new find replaces it, and what its read said (#80)
         self.set_message("find", "")
         self.show_found(group, found)
 

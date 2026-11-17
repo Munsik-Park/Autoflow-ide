@@ -1,3 +1,4 @@
+import pytest
 from textual.widgets import DataTable, Input, Static
 from textual.worker import WorkerCancelled
 
@@ -1098,11 +1099,13 @@ EVERY = [WorkspaceEntry("autoflow-coordinator", "Munsik-Park/autoflow-coordinato
 
 
 def every_app(runs=(), recent=("autoflow-coordinator", "autoflow-sandbox", "gone"), state_file=None, run_loader=None,
-              **kw):
+              loader=None, workspaces_reader=None, **kw):
     """Every workspace of EVERY; `recent` are the workspaces chosen recently (all of them: all unfolded)."""
     if state_file is None:
         state_file = Path(tempfile.mkdtemp()) / "state.json"
         state_file.write_text(json.dumps({"recent": list(recent)}))
+    given_loader = loader
+
     async def workspaces(coordinator):
         return EVERY
 
@@ -1117,8 +1120,8 @@ def every_app(runs=(), recent=("autoflow-coordinator", "autoflow-sandbox", "gone
     async def given_runs(coordinator):
         return list(runs)
 
-    return IdeApp(coordinator="/c", loader=loader, run_loader=run_loader or given_runs, workspaces_reader=workspaces,
-                  state_file=state_file, **kw)
+    return IdeApp(coordinator="/c", loader=given_loader or loader, run_loader=run_loader or given_runs,
+                  workspaces_reader=workspaces_reader or workspaces, state_file=state_file, **kw)
 
 
 def keys(table):
@@ -2021,3 +2024,399 @@ async def test_given_issues_show_a_waiting_session():
     async with app.run_test() as pilot:
         await pilot.pause()
         assert marks(app) == {"1": WAIT_MARK, "2": RUN_MARK}
+
+
+# An issue found by its number, read again at the end of each read of the issues (#80)
+
+SANDBOX = "Munsik-Park/autoflow-sandbox"
+
+
+class Source:
+    """GitHub as a found issue's lookup sees it: what each number is now, or the error a read of it gets."""
+
+    def __init__(self, **answers):
+        self.answers = dict(answers)   # number as "n12" -> Issue, or IssueSourceError
+        self.asked = []
+
+    def set(self, number, answer):
+        self.answers[f"n{number}"] = answer
+
+    async def __call__(self, repository, number):
+        self.asked.append(number)
+        answer = self.answers[f"n{number}"]
+        if isinstance(answer, IssueSourceError):
+            raise answer
+        return replace(answer)   # a new object on each read, as gh gives
+
+    def count(self, number):
+        return self.asked.count(number)
+
+
+async def find(pilot, app, number):
+    await pilot.press("number_sign", *str(number), "enter")
+    await settle(app, pilot)
+
+
+async def wait(pilot, seconds=0.3):
+    """Pause without waiting on a held read, as settle would."""
+    for _ in range(int(seconds / 0.05)):
+        await pilot.pause(0.05)
+
+
+async def test_a_found_issue_that_closes_shows_closed_after_the_interval_with_no_key():
+    source = Source(n12=Issue(12, "an old one"))
+    app = every_app(lookup=source, issue_refresh_sec=0.05)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index(f"{SANDBOX}#4"))
+        await find(pilot, app, 12)
+        held = app.current
+        assert str(issues.get_cell(f"{SANDBOX}#12", "title")).startswith("12  an old")   # cut to the pane
+        assert "  |  #12  |  " in status(app)
+        source.set(12, Issue(12, "an old one", state="closed"))
+        await pilot.pause(0.3)                                       # no key: the interval reads it again
+        await settle(app, pilot)
+        assert str(issues.get_cell(f"{SANDBOX}#12", "title")).startswith("12  (closed) ")
+        assert "  |  #12 (closed)  |  " in status(app)
+        assert keys(issues)[issues.cursor_row] == f"{SANDBOX}#12" and app.current is held
+
+
+async def test_a_found_issue_is_read_again_once_on_r_a_step_change_and_a_run_ending():
+    run = RECORDED_RUNS[0]
+    answer = [[run]]
+
+    async def runs(coordinator):
+        return answer[0]
+
+    source = Source(n12=Issue(12, "twelve"))
+    app = coordinated_app(run_loader=runs, lookup=source, run_refresh_sec=10)   # the runs read when the test asks
+    async with app.run_test(size=(160, 30)) as pilot:
+        await settle(app, pilot)
+        await find(pilot, app, 12)
+        assert source.count(12) == 1
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert source.count(12) == 2
+        answer[0] = [with_last_step(run, state="pass", verdict="pass")]            # a step changes
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert source.count(12) == 3
+        answer[0] = []                                                              # the run ends
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert source.count(12) == 4
+        app.refresh_runs()                                                          # nothing changed: not read
+        await settle(app, pilot)
+        assert source.count(12) == 4
+
+
+async def test_a_found_row_says_what_the_number_is_now():
+    source = Source(n12=Issue(12, "a fix", pull=True), n13=Issue(13, "done", state="closed"))
+    app = coordinated_app(lookup=source)
+    async with app.run_test(size=(160, 30)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        await find(pilot, app, 12)
+        assert str(issues.get_cell("12", "title")).startswith("(PR) ") and "  |  #12 (PR)  |  " in status(app)
+        source.set(12, Issue(12, "a fix, merged", state="closed", pull=True))
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert str(issues.get_cell("12", "title")).startswith("(closed PR) ")         # cut to the pane
+        assert app.current.title == "a fix, merged" and "  |  #12 (closed PR)  |  " in status(app)
+        await find(pilot, app, 13)
+        assert str(issues.get_cell("13", "title")).startswith("(closed) ") and "  |  #13 (closed)  |  " in status(app)
+        source.set(13, Issue(13, "done"))                                            # reopened
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert str(issues.get_cell("13", "title")) == "done" and "  |  #13  |  " in status(app)
+        assert issues.row_count == 3 and app.current.number == 13
+
+
+async def test_found_issues_of_two_workspaces_are_read_again_each_with_its_run_and_a_listed_one_is_not():
+    runs = []
+
+    async def run_loader(coordinator):
+        return list(runs)
+
+    source = Source(n12=Issue(12, "twelve"), n30=Issue(30, "thirty"))
+    app = every_app(run_loader=run_loader, lookup=source, run_refresh_sec=10)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-coordinator#67"))
+        await find(pilot, app, 30)
+        issues.move_cursor(row=keys(issues).index(f"{SANDBOX}#4"))
+        await find(pilot, app, 4)                                    # listed: shown from the list, not looked up
+        await find(pilot, app, 12)
+        runs.append(Run("autoflow-sandbox-12-k", [Step("analysis", "pass", "pass")], [Session("S1", "working")],
+                        issue="12"))                                 # a run starts for the found issue
+        app.refresh_runs()
+        await settle(app, pilot)
+        held, rows, asked = app.current, issues.row_count, (source.count(12), source.count(30))
+        assert str(issues.get_cell(f"{SANDBOX}#12", "run")) == RUN_MARK and held.run is not None
+        source.set(12, Issue(12, "twelve", state="closed"))
+        source.set(30, Issue(30, "renamed"))
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert (source.count(12), source.count(30)) == (asked[0] + 1, asked[1] + 1) and 4 not in source.asked
+        assert str(issues.get_cell(f"{SANDBOX}#12", "title")).startswith("12  (closed) ")
+        assert str(issues.get_cell("Munsik-Park/autoflow-coordinator#30", "title")) == "30  renamed"
+        assert str(issues.get_cell(f"{SANDBOX}#12", "run")) == RUN_MARK
+        assert app.current is held and held.run is not None and issues.row_count == rows
+        assert app.query_one("#run", DataTable).row_count == 1 and "autoflow-sandbox-12-k" in status(app)
+
+
+async def test_a_found_issue_whose_lookup_fails_keeps_its_state_and_the_status_line_says_why_until_it_is_read():
+    source = Source(n12=Issue(12, "an old one"))
+    app = every_app(lookup=source, notice_sec=0.3)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index(f"{SANDBOX}#4"))
+        await find(pilot, app, 12)
+        rows = keys(issues)
+        source.set(12, IssueSourceError("gh: HTTP 502"))
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert str(issues.get_cell(f"{SANDBOX}#12", "title")).startswith("12  an old") and keys(issues) == rows
+        assert "  |  #12  |  " in status(app) and "issue autoflow-sandbox#12: gh: HTTP 502" in status(app)
+        await pilot.pause(0.5)                                       # not a notice: it stays, and not first
+        assert "issue autoflow-sandbox#12: gh: HTTP 502" in status(app)
+        assert status(app).startswith(f"{SANDBOX}  |  #12  |  ")
+        source.set(12, Issue(12, "an old one", state="closed"))
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert str(issues.get_cell(f"{SANDBOX}#12", "title")).startswith("12  (closed) ")
+        assert "  |  #12 (closed)  |  " in status(app) and "HTTP 502" not in status(app)
+        source.set(12, IssueSourceError("gh: HTTP 502"))             # a closed one stays closed while it fails
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert str(issues.get_cell(f"{SANDBOX}#12", "title")).startswith("12  (closed) ")
+        assert "  |  #12 (closed)  |  " in status(app) and "issue autoflow-sandbox#12: gh: HTTP 502" in status(app)
+
+
+async def test_a_found_failure_and_a_run_row_lookup_are_said_each_on_its_own():
+    source = Source(n3=IssueSourceError("gh: Not Found (HTTP 404)"), n12=Issue(12, "twelve"))
+    app, _ = merged_app([[Issue(4, "four")]], lookup=source, run_refresh_sec=0.05)
+    async with app.run_test(size=(160, 30)) as pilot:
+        await settle(app, pilot)
+        await pilot.pause(0.2)
+        await settle(app, pilot)
+        assert "issue #3: gh: Not Found (HTTP 404)" in status(app)
+        await find(pilot, app, 12)
+        source.set(12, Issue(12, "twelve", state="closed"))          # the found read succeeds, the run row's fails
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert "issue #3: gh: Not Found (HTTP 404)" in status(app) and "issue #12" not in status(app)
+        source.set(3, CLOSED_3)                                      # the reverse
+        source.set(12, IssueSourceError("gh: HTTP 502"))
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert "issue #3:" not in status(app) and "issue #12: gh: HTTP 502" in status(app)
+
+
+async def test_a_failed_read_of_the_list_still_reads_the_found_issue():
+    lists = []
+
+    async def loader(repository):
+        lists.append(repository)
+        if len(lists) > 1:
+            raise IssueSourceError("gh: HTTP 503")
+        return [Issue(4, "four"), Issue(3, "three")]
+
+    source = Source(n12=Issue(12, "twelve"))
+    app = IdeApp(repository=SANDBOX, loader=loader, coordinator="/c", run_loader=lambda c: asyncio.sleep(0, []),
+                 lookup=source)
+    async with app.run_test(size=(160, 30)) as pilot:
+        await settle(app, pilot)
+        await find(pilot, app, 12)
+        source.set(12, Issue(12, "twelve", state="closed"))
+        await pilot.press("r")
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        assert str(issues.get_cell("12", "title")) == "(closed) twelve" and "  |  #12 (closed)  |  " in status(app)
+        assert "issues: gh: HTTP 503" in status(app) and "issue #12" not in status(app)
+        source.set(12, IssueSourceError("gh: HTTP 502"))
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert "issues: gh: HTTP 503" in status(app) and "issue #12: gh: HTTP 502" in status(app)
+
+
+async def test_a_failed_read_of_the_workspaces_or_of_a_workspace_list_still_reads_the_found_issue():
+    reads = []
+
+    async def workspaces(coordinator):
+        reads.append(coordinator)
+        if len(reads) > 1:
+            raise StartError("config.py base: exit 1")
+        return EVERY
+
+    source = Source(n12=Issue(12, "twelve"), n7=Issue(7, "seven"))
+    app = every_app(lookup=source, workspaces_reader=workspaces)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index(f"{SANDBOX}#4"))
+        await find(pilot, app, 12)
+        issues.move_cursor(row=keys(issues).index("Munsik-Park/gone"))   # its list cannot be read
+        await find(pilot, app, 7)
+        source.set(12, Issue(12, "twelve", state="closed"))
+        source.set(7, Issue(7, "seven", state="closed"))
+        await pilot.press("r")                                       # the workspaces cannot be read
+        await settle(app, pilot)
+        assert "workspaces: config.py base: exit 1" in status(app)
+        assert str(issues.get_cell(f"{SANDBOX}#12", "title")).startswith("12  (closed) ")
+        assert str(issues.get_cell("Munsik-Park/gone#7", "title")).startswith("7  (closed) ")
+        assert "  |  #7 (closed)  |  " in status(app)
+
+
+async def test_a_found_issue_the_list_shows_is_drawn_from_the_list_and_not_read():
+    listed = [[Issue(4, "four"), Issue(3, "three")]]
+
+    async def loader(repository, limit):
+        if repository == "Munsik-Park/gone":
+            raise IssueSourceError("Could not resolve to a Repository")
+        return listed[0] if repository == SANDBOX else [Issue(67, "instructions")]
+
+    source = Source(n12=Issue(12, "twelve"))
+    app = every_app(loader=loader, lookup=source)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index(f"{SANDBOX}#4"))
+        await find(pilot, app, 12)
+        source.set(12, IssueSourceError("gh: HTTP 502"))
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert "issue autoflow-sandbox#12: gh: HTTP 502" in status(app)
+        asked = source.count(12)
+        listed[0] = [Issue(12, "twelve, listed"), Issue(4, "four"), Issue(3, "three")]   # among the 5 recent now
+        for _ in range(2):
+            await pilot.press("r")
+            await settle(app, pilot)
+            assert str(issues.get_cell(f"{SANDBOX}#12", "title")) == "12  twelve, listed"
+            assert "autoflow-sandbox#12:" not in status(app)         # its failure goes with its held copy
+        assert source.count(12) == asked                             # drawn from the list: not read
+
+
+def entering_and_leaving_the_list(source):
+    """Every workspace whose sandbox list the test changes: (app, the sandbox list as a one-item list)."""
+    listed = [[Issue(4, "four"), Issue(3, "three")]]
+
+    async def loader(repository, limit):
+        if repository == "Munsik-Park/gone":
+            raise IssueSourceError("Could not resolve to a Repository")
+        return listed[0] if repository == SANDBOX else [Issue(67, "instructions")]
+
+    return every_app(loader=loader, lookup=source), listed
+
+
+async def found_then_listed(pilot, app, listed):
+    await settle(app, pilot)
+    issues = app.query_one("#issues", DataTable)
+    issues.move_cursor(row=keys(issues).index(f"{SANDBOX}#4"))
+    await find(pilot, app, 12)
+    listed[0] = [Issue(12, "twelve, listed"), Issue(4, "four"), Issue(3, "three")]   # among the 5 recent now
+    await pilot.press("r")
+    await settle(app, pilot)
+    assert str(issues.get_cell(f"{SANDBOX}#12", "title")) == "12  twelve, listed"
+    return issues
+
+
+async def test_a_found_issue_that_leaves_the_list_closed_shows_closed_after_one_read():
+    source = Source(n12=Issue(12, "twelve"))
+    app, listed = entering_and_leaving_the_list(source)
+    async with app.run_test(size=(121, 37)) as pilot:
+        issues = await found_then_listed(pilot, app, listed)
+        asked = source.count(12)
+        listed[0] = [Issue(4, "four"), Issue(3, "three")]            # a merge closes it: it leaves the list
+        source.set(12, Issue(12, "twelve, listed", state="closed"))
+        await pilot.press("r")                                       # one read
+        await settle(app, pilot)
+        assert source.count(12) == asked + 1
+        assert str(issues.get_cell(f"{SANDBOX}#12", "title")).startswith("12  (closed) ")
+        assert keys(issues)[issues.cursor_row] == f"{SANDBOX}#12" and "  |  #12 (closed)  |  " in status(app)
+
+
+async def test_a_found_issue_that_leaves_the_list_and_fails_keeps_its_state_and_says_why():
+    source = Source(n12=Issue(12, "twelve"))
+    app, listed = entering_and_leaving_the_list(source)
+    async with app.run_test(size=(121, 37)) as pilot:
+        issues = await found_then_listed(pilot, app, listed)
+        listed[0] = [Issue(4, "four"), Issue(3, "three")]
+        source.set(12, IssueSourceError("gh: HTTP 502"))
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert str(issues.get_cell(f"{SANDBOX}#12", "title")) == "12  twelve"
+        assert "  |  #12  |  " in status(app) and "issue autoflow-sandbox#12: gh: HTTP 502" in status(app)
+
+
+@pytest.mark.parametrize("late", [Issue(12, "stale", state="closed"), IssueSourceError("gh: HTTP 502")],
+                         ids=["late success", "late failure"])
+@pytest.mark.parametrize("then", ["escape and find it again", "find another"])
+async def test_a_read_out_when_esc_or_a_new_find_changes_the_found_issue_is_dropped(late, then):
+    release = asyncio.Event()
+    reads = []
+
+    async def lookup(repository, number):
+        reads.append(number)
+        if len(reads) == 2:                                          # the read at the end of `r`, held
+            await release.wait()
+            if isinstance(late, IssueSourceError):
+                raise late
+            return replace(late)
+        return Issue(number, "fresh")
+
+    app = every_app(lookup=lookup)
+    async with app.run_test(size=(121, 37)) as pilot:
+        await settle(app, pilot)
+        issues = app.query_one("#issues", DataTable)
+        issues.move_cursor(row=keys(issues).index(f"{SANDBOX}#4"))
+        await find(pilot, app, 12)
+        await pilot.press("r")
+        await wait(pilot)
+        assert reads == [12, 12]
+        if then == "escape and find it again":
+            await pilot.press("escape")                              # cleared while it is read
+            await pilot.pause()
+            assert f"{SANDBOX}#12" not in keys(issues)
+            issues.move_cursor(row=keys(issues).index(f"{SANDBOX}#4"))
+            number = 12
+        else:
+            number = 13
+        await pilot.press("number_sign", *str(number), "enter")      # a new find, while the read is out
+        await wait(pilot)
+        assert reads == [12, 12, number] and app.current.title == "fresh"
+        release.set()
+        await settle(app, pilot)
+        assert reads == [12, 12, number]
+        assert str(issues.get_cell(f"{SANDBOX}#{number}", "title")) == f"{number}  fresh"
+        assert not app.current.closed and "HTTP 502" not in status(app)
+        assert number == 12 or f"{SANDBOX}#12" not in keys(issues)
+        await pilot.press("escape")
+        await settle(app, pilot)
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert f"{SANDBOX}#{number}" not in keys(issues) and reads == [12, 12, number]
+
+
+async def test_esc_and_a_new_find_clear_a_found_failure():
+    source = Source(n12=Issue(12, "twelve"), n13=Issue(13, "thirteen"))
+    app = coordinated_app(lookup=source)
+    async with app.run_test(size=(160, 30)) as pilot:
+        await settle(app, pilot)
+        await find(pilot, app, 12)
+        source.set(12, IssueSourceError("gh: HTTP 502"))
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert "issue #12: gh: HTTP 502" in status(app)
+        await find(pilot, app, 13)                                   # replaces #12: its failure goes
+        assert "issue #12" not in status(app)
+        source.set(13, IssueSourceError("gh: HTTP 502"))
+        await pilot.press("r")
+        await settle(app, pilot)
+        assert "issue #13: gh: HTTP 502" in status(app)
+        await pilot.press("escape")                                  # clears what was found, and its failure
+        await settle(app, pilot)
+        assert "issue #13" not in status(app) and "13" not in keys(app.query_one("#issues", DataTable))
