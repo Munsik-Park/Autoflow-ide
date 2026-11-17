@@ -18,6 +18,7 @@ from autoflow_ide.focus import FocusError, focus_surface
 from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repository_from_workspace, workspace_issues
 from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
+from autoflow_ide.screens import waiting
 from autoflow_ide.start import (Setting, StartError, TokenError, Workspace, coordinator_base, coordinator_workspace,
                                coordinator_workspace_entry, coordinator_workspaces, create_workspace, read_token,
                                repository_of, setting_source, start_run)
@@ -53,6 +54,11 @@ ISSUE_REFRESH_SEC = 60.0
 WINDOW_CHECK_SEC = 15.0
 WINDOW_IDLE_SEC = 300.0
 RUN_MARK = "●"
+# An issue that waits for the operator's answer, in place of RUN_MARK or blank: a pane of its coordination session
+# window shows a prompt at the last window check, or a work session of its run is in WAITING_INPUT, the state the
+# coordinator's status.py gives such a session, at the last read of the runs (#79).
+WAIT_MARK = "?"
+WAITING_INPUT = "waiting-input"
 # Notices of something that happened once (a coordination session opened, a window closed, a focus moved, an
 # issue found, the state file not written) are shown first on the status line, so a narrow line does not cut
 # them off, and go NOTICE_SEC after they are set (#26). The other messages say what is true now (the counts, the
@@ -210,6 +216,8 @@ class IdeApp(App):
         self.places: Dict[str, str] = {}
         # The coordination session windows, by (workspace, issue): (window id, its screen, when first seen).
         self.screens: Dict[Tuple[str, int], Tuple[str, str, float]] = {}
+        # The issues whose coordination session window showed a prompt at the last check that read its screen (#79).
+        self.waiting_windows: Set[IssueKey] = set()
         # When an issue was last looked up and not found closed (found open, or the lookup failed), so it is not
         # looked up on every check.
         self.not_found_closed: Dict[IssueKey, float] = {}
@@ -386,6 +394,22 @@ class IdeApp(App):
             self.on_header = None
             self.current = next((i for i in self.issues if self.row_key(i) == key), self.current)
 
+    def waits(self, issue: Issue) -> bool:
+        """Whether `issue` waits for the operator: its window showed a prompt, or a work session of any of its
+        runs, matched as finished() matches them, is in WAITING_INPUT (#79)."""
+        if issue_key(issue) in self.waiting_windows:
+            return True
+        runs = [r for r in self.runs if r.issue == str(issue.number) and self.run_repository(r) == issue.repository]
+        if issue.run is not None:
+            runs.append(issue.run)
+        return any(s.state == WAITING_INPUT for r in runs for s in r.sessions)
+
+    def mark(self, issue: Issue) -> Union[str, Text]:
+        """The first cell of an issue's row (#79)."""
+        if self.waits(issue):
+            return Text(WAIT_MARK, style="bold")
+        return RUN_MARK if issue.run else ""
+
     def render_issues(self) -> None:
         table = self.query_one("#issues", DataTable)
         self.follow_cursor()
@@ -399,10 +423,9 @@ class IdeApp(App):
                 folded = group.repository in self.folded and not self.running_only
                 rows.append((group.repository, [FOLDED_MARK if folded else UNFOLDED_MARK,
                                                  Text(group_title(group, folded), style="bold")]))
-                rows += [(self.row_key(i), [RUN_MARK if i.run else "", f"{i.number}  {issue_title(i)}"])
-                         for i in issues]
+                rows += [(self.row_key(i), [self.mark(i), f"{i.number}  {issue_title(i)}"]) for i in issues]
             else:
-                rows += [(self.row_key(i), [RUN_MARK if i.run else "", str(i.number), issue_title(i)]) for i in issues]
+                rows += [(self.row_key(i), [self.mark(i), str(i.number), issue_title(i)]) for i in issues]
         fill(table, EVERY_ISSUE_COLUMNS if self.every else ISSUE_COLUMNS, rows)
         # With only running issues shown and none to show, the empty pane says why.
         none = self.running_only and not any(self.shown(g) for g in self.groups)
@@ -778,12 +801,18 @@ class IdeApp(App):
         now = time.monotonic()
         self.screens = {k: s for k, s in self.screens.items() if k in found}
         self.finished_since = {k: t for k, t in self.finished_since.items() if k in found}
+        # Every screen first, each pane captured once, so the marks do not wait for the lookups below (#79).
+        panes: Dict[Tuple[str, int], List[str]] = {}
         for (workspace, number), (repository, window) in found.items():
             try:
-                screen = await self.windows.screen(window)
+                panes[(workspace, number)] = await self.windows.screens(window)
             except WindowError as e:
                 self.set_message("windows", f"{window.name}: {e}")
+        self.mark_waiting(found, panes)
+        for (workspace, number), (repository, window) in found.items():
+            if (workspace, number) not in panes:
                 continue
+            screen = "\n".join(panes[(workspace, number)])
             seen = self.screens.get((workspace, number))
             if seen is None or seen[0] != window.id or seen[1] != screen:
                 self.screens[(workspace, number)] = seen = (window.id, screen, now)
@@ -809,7 +838,25 @@ class IdeApp(App):
             del self.screens[(workspace, number)]
             del self.finished_since[(workspace, number)]
             self.started.pop((repository, number), None)
+            self.waiting_windows.discard((repository, number))
             self.set_message("windows", f"closed {window.name}: #{number} is closed and has no run")
+
+    def mark_waiting(self, found: Dict[Tuple[str, int], Tuple[str, Window]],
+                     panes: Dict[Tuple[str, int], List[str]]) -> None:
+        """Keep the issues whose window shows a prompt in any of its panes, and redraw the issues when they
+        changed. A window whose screen could not be read keeps its last judgment until a check reads it; one no
+        longer found is dropped (#79)."""
+        shown = set()
+        for place, (repository, window) in found.items():
+            key = (repository, place[1])
+            if place in panes:
+                if any(waiting(screen) for screen in panes[place]):
+                    shown.add(key)
+            elif key in self.waiting_windows:
+                shown.add(key)
+        if shown != self.waiting_windows:
+            self.waiting_windows = shown
+            self.render_issues()
 
     async def finished(self, key: IssueKey, now: float, ask: bool = True) -> bool:
         """Whether issue `key` is closed and has no active run. Closed is asked of GitHub, not taken from

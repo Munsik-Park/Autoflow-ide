@@ -139,3 +139,9 @@ def test_parse_a_return_and_a_rerun():
     assert (by_label["review-2"].entry, by_label["review-2"].cause) == ("rerun", "review-1")
     assert all(s.entry is None and s.cause is None for s in run.steps[:3])
     assert all(s.session_state is None and s.idle_sec is None for s in run.steps)
+
+
+def test_parse_a_session_waiting_for_input():
+    # status-cycle.json with S2 in waiting-input, the state status.py gives a session that waits (#79).
+    [run] = parse_status(fixture("status-waiting.json"))
+    assert [(s.name, s.state) for s in run.sessions] == [("S1", "exited"), ("S2", "waiting-input"), ("S3", "exited")]

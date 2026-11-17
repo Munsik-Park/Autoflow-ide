@@ -57,6 +57,14 @@ async def test_screen_captures_each_pane_and_close_kills_the_window(tmp_path, mo
     assert log.read_text().splitlines() == ["capture-pane -p -t %2", "capture-pane -p -t %3", "kill-window -t @2"]
 
 
+async def test_screens_capture_each_pane_once_in_order(tmp_path, monkeypatch):
+    # A prompt is judged per pane (#79); the joined screen, for the idle wait, is made from the same captures.
+    log = fake_tmux(tmp_path, monkeypatch, "> \n")
+    window = Window("@2", "autoflow-sandbox#4", ["%2", "%3"])
+    assert await TmuxWindows().screens(window) == ["> \n", "> \n"]
+    assert log.read_text().splitlines() == ["capture-pane -p -t %2", "capture-pane -p -t %3"]
+
+
 async def test_tmux_error_carries_its_message(tmp_path, monkeypatch):
     # As tmux 3.4 reports a window that is gone (exit status 1).
     fake_tmux(tmp_path, monkeypatch, fail_with="can't find window: @99")

@@ -1,0 +1,15 @@
+
+⏺ autoflow:autoflow-unit-analysis(Run analysis module for issue 80) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ Check-in이 통과되어 autoflow-unit-analysis spawn(model sonnet)이 issue #80 분석을 수행하고 있습니다. 완료
+  통지를 받으면 산출물을 검증하고 check-out을 실행하겠습니다.
+
+✻ Waiting for 1 background agent to finish
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⚠ status: cost and token figures removed
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent · ↓ to manage
+
