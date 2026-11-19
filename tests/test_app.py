@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from textual.widgets import DataTable, Input, Static
 from textual.worker import WorkerCancelled
@@ -1827,6 +1829,13 @@ async def test_a_folder_that_cannot_be_listed_is_named_with_the_reason_not_shown
     (out / "locked").chmod(0)
     shut.chmod(0)
     try:
+        try:
+            os.listdir(shut)
+        except PermissionError:
+            pass
+        else:
+            # chmod 0 does not stop root, so the folders stay listable and there is nothing to name (#83)
+            pytest.skip("chmod 0 does not make a folder unlistable here (running as root)")
         app = results_app([Step("build-1", "running", None, "S1", "build", out=str(out)),
                            Step("build-2", "running", None, "S1", "build", out=str(shut))])
         async with app.run_test(size=(140, 40)) as pilot:
