@@ -1815,6 +1815,36 @@ async def test_names_in_a_work_folder_are_shown_as_written_and_not_read_as_marku
         assert app.is_running and isinstance(app.screen, OutputView)
 
 
+async def test_a_folder_that_cannot_be_listed_is_named_with_the_reason_not_shown_empty(tmp_path):
+    # As the change names an end record it cannot read, a folder it cannot list says why (#83).
+    from autoflow_ide.detail import FolderView
+
+    out = tmp_path / "build-1"
+    (out / "locked").mkdir(parents=True)
+    (out / "locked" / "a.md").write_text("a\n")
+    shut = tmp_path / "build-2"
+    shut.mkdir()
+    (out / "locked").chmod(0)
+    shut.chmod(0)
+    try:
+        app = results_app([Step("build-1", "running", None, "S1", "build", out=str(out)),
+                           Step("build-2", "running", None, "S1", "build", out=str(shut))])
+        async with app.run_test(size=(140, 40)) as pilot:
+            await settle(app, pilot)
+            await pilot.press("2", "enter", "1")
+            await pilot.pause()
+            assert isinstance(app.screen, FolderView)
+            text = detail_text(app)
+            assert "Could not read" in text and "locked: Permission denied" in text and "(empty folder)" not in text
+            await pilot.press("escape", "escape", "down", "enter")
+            await pilot.pause()
+            text = detail_text(app)
+            assert "Could not read" in text and "build-2: Permission denied" in text and "(empty folder)" not in text
+    finally:
+        (out / "locked").chmod(0o755)
+        shut.chmod(0o755)
+
+
 # Steps past the pane's height scroll into view (#69)
 
 async def test_the_run_table_scrolls_to_a_step_below_the_pane():
