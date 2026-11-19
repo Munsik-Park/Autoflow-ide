@@ -475,7 +475,15 @@ from autoflow_ide.model import Step
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CYCLE = parse_status((FIXTURES / "status-cycle.json").read_text())
-RECORDS = FIXTURES / "records" / "autoflow-sandbox-6-results"
+REVIEWS = parse_status((FIXTURES / "status-reviews.json").read_text())
+# The records of a run of autoflow-coordinator 0.8 (tests/fixtures/README.md, #83).
+RECORDS = FIXTURES / "records" / "autoflow-coordinator-119-2026-11-19-180359-3cbd8c18"
+
+
+def review_step(label, **kw):
+    """A step of the recorded run whose work folder is in the fixtures, as status.py gives it (#83)."""
+    [step] = [s for s in REVIEWS[0].steps if s.label == label]
+    return replace(step, out=str(RECORDS / label), **kw)
 
 
 def test_describe_a_running_step():
@@ -483,6 +491,9 @@ def test_describe_a_running_step():
                               idle_sec=42.4, out="/r/build-1")))
     assert rows["Session"] == "S2 (working, idle 42s)" and rows["Verdict"] == "-" and rows["Result"] == "-"
     assert rows["Folder"] == "/r/build-1"
+    # the end record's status, as status.py gives it (#83)
+    assert dict(describe(Step("review-1", "pass", "met", "S2", "review", out="/r/review-1", result="ended")))[
+        "Result"] == "ended"
 
 
 def run_pane_names(app):
@@ -521,76 +532,66 @@ async def test_the_run_pane_marks_a_return_and_a_rerun_with_their_cause():
 
 
 async def test_enter_on_a_step_opens_it_and_c_goes_to_its_cause():
-    steps = [Step("review-1", "fail", "goal missed", "S3", "review", out=str(RECORDS / "review-1"), result="accepted"),
-             Step("build-2", "pass", "pass", "S2", "build", "return", "review-1", out=str(RECORDS / "build-2"),
-                  result="accepted")]
+    steps = [review_step("review-1"), review_step("review-2")]
     app = results_app(steps)
     async with app.run_test(size=(140, 40)) as pilot:
         await settle(app, pilot)
-        await pilot.press("2", "down", "enter")                       # build-2
+        await pilot.press("2", "down", "enter")                       # review-2
         await pilot.pause()
         assert isinstance(app.screen, StepDetail)
-        assert app.screen.query_one("#detail").border_title == "Step 2  ↩ build-2 ← review-1"
+        assert app.screen.query_one("#detail").border_title == "Step 2  ↺ review-2 ← review-1"
         text = detail_text(app)
-        assert "Result   accepted" in text and "Outputs" in text and "1  commits.json" in text
-        assert "Lacked" in text and "A Windows environment" in text
+        assert "Result   ended" in text and "1  report.md" in text and "2  reviews/" in text
+        assert "after the end" not in text                              # the end record lists every file (#83)
         await pilot.press("c")
         await pilot.pause()
         assert not isinstance(app.screen, StepDetail)
         assert app.query_one("#run", DataTable).cursor_row == 0           # review-1
         await pilot.press("enter")
         await pilot.pause()
-        text = detail_text(app)
-        assert "Review findings (review-findings.md)" in text and "### F1 — Medium — holds" in text
-        assert "Outputs" not in text                                      # the findings are the result
+        assert app.screen.query_one("#detail").border_title == "Step 1  review-1"
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(app.screen, StepDetail)
 
 
-async def test_the_detail_shows_an_evaluation_a_refusal_and_a_failure():
-    steps = [Step("plan-1", "pass", "pass", "S1", "plan", out=str(RECORDS / "plan-1"), result="accepted"),
-             Step("review-2", "awaiting", "awaiting verdict", "S3", "review", "rerun", "review-1",
-                  out=str(RECORDS / "review-2"), result="refused"),
-             Step("review-3", "fail", "goal not met", "S3", "review", "rerun", "review-1",
-                  out=str(RECORDS / "review-3"), result="failed")]
+async def test_the_detail_notes_what_it_cannot_show(tmp_path):
+    # The notes of the 0.8 coordinator's work folder and end record (#83).
+    running = tmp_path / "review-4"
+    running.mkdir()
+    (running / "draft.md").write_text("so far\n")
+    broken = tmp_path / "review-5"
+    broken.mkdir()
+    (broken / "draft.md").write_text("so far\n")
+    (tmp_path / "review-5.ended.json").write_text("{not json")
+    steps = [Step("CI check (gh)", "pass", "pass", "X1"),
+             Step("review-4", "running", None, None, "review", "rerun", "review-1", out=str(running)),
+             Step("review-5", "awaiting", "awaiting verdict", None, "review", "rerun", "review-1", out=str(broken)),
+             Step("review-6", "running", None, None, "review", out=str(tmp_path / "review-6"))]
     app = results_app(steps)
     async with app.run_test(size=(140, 40)) as pilot:
         await settle(app, pilot)
         await pilot.press("2", "enter")
         await pilot.pause()
-        text = detail_text(app)
-        assert "Scores" in text and "Decision grounds  9" in text and "Recommendations (7)" in text
-        assert "Low · Decision grounds · feature-design.md > Decisions > D4 (Holds under)" in text
+        assert "No module run: this step has no work folder." in detail_text(app)
         await pilot.press("escape", "down", "enter")
         await pilot.pause()
         text = detail_text(app)
-        assert "Result   refused" in text and "Defects" in text and "param 'pr' does not match" in text
+        assert "not ended yet" in text and "1  draft.md" in text and "checked out" not in text
         await pilot.press("escape", "down", "enter")
         await pilot.pause()
         text = detail_text(app)
-        assert "Result   failed" in text and "Why it did not reach its goal (failure.md)" in text
-        assert app.screen.query_one("#detail-body Markdown").source.startswith("# ")
-
-
-async def test_the_detail_of_a_step_with_no_result():
-    steps = [Step("CI check (gh)", "pass", "pass", "X1"),
-             Step("review-4", "running", None, None, "review", "rerun", "review-1", out=str(RECORDS / "review-4")),
-             Step("review-5", "running", None, None, "review", out="/no/such/review-5")]
-    app = results_app(steps)
-    async with app.run_test(size=(140, 40)) as pilot:
-        await settle(app, pilot)
-        await pilot.press("2")
-        for row, expected in enumerate(("No module run", "No result yet", "not there yet")):
-            await pilot.press(*(["escape", "down"] if row else []), "enter")
-            await pilot.pause()
-            assert expected in detail_text(app)
+        assert "Could not read" in text and "review-5.ended.json" in text and "1  draft.md" in text
+        assert "not ended yet" not in text and "after the end" not in text
+        await pilot.press("escape", "down", "enter")
+        await pilot.pause()
+        assert "The work folder is not there yet." in detail_text(app)
 
 
 async def test_the_detail_scrolls():
-    steps = [Step("review-1", "fail", "goal missed", "S3", "review", out=str(RECORDS / "review-1"), result="accepted")]
+    steps = [review_step("review-2")]                                 # long Verdict and Notes cells
     app = results_app(steps)
-    async with app.run_test(size=(100, 30)) as pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         await settle(app, pilot)
         await pilot.press("2", "enter")
         await pilot.pause()
@@ -1057,8 +1058,7 @@ def test_row_cells_show_what_the_verdict_and_the_table_leave_out():
 async def test_the_detail_shows_the_row_cells_above_the_output_folder():
     steps = [Step("F1 fix (outside AutoFlow)", "pass", "pass", "X1", verdict_text="pass, [head] 253901c pushed",
                   notes="x1-2-instruction.txt"),
-             Step("review-1", "fail", "goal missed", "S3", "review", out=str(RECORDS / "review-1"), result="accepted",
-                  verdict_text="goal missed: F1 holds (Medium)", notes="F1 fixed by X1, then re-review")]
+             review_step("review-1", verdict_text="goal missed: F1 holds (Medium)", notes="F1 fixed by X1, then re-review")]
     app = results_app(steps)
     async with app.run_test(size=(140, 40)) as pilot:
         await settle(app, pilot)
@@ -1070,7 +1070,7 @@ async def test_the_detail_shows_the_row_cells_above_the_output_folder():
         await pilot.press("escape", "down", "enter")
         await pilot.pause()
         text = detail_text(app)
-        assert text.index("F1 fixed by X1") < text.index("Review findings (review-findings.md)")
+        assert text.index("F1 fixed by X1") < text.index("1  report.md")      # the work folder's entries (#83)
 
 
 async def test_the_ide_version_is_in_the_bottom_right_corner():
@@ -1712,43 +1712,72 @@ async def test_the_highlighted_step_is_kept_when_the_issue_list_is_redrawn():
         assert app.on_header == "Munsik-Park/autoflow-sandbox" and app.current is None
 
 
-# Opening a listed output (#67)
+# Opening a listed output (#67), the work folder's entries and the folders among them (#83)
 
-async def test_a_number_opens_a_listed_output_and_esc_goes_back_to_the_step(tmp_path):
+async def test_a_number_opens_an_entry_a_folder_opens_into_its_entries_and_esc_goes_back_one_level():
     from autoflow_ide.detail import OutputView
 
-    out = tmp_path / "criterion-screen-1"
-    (out / "targets").mkdir(parents=True)
-    (out / "criterion-review.md").write_text("# Criterion review\n\n- AC1 revised: A1\n")
-    (out / "targets" / "AC1.md").write_text("AC1 target\n")
-    (out / "result.json").write_text(json.dumps({"status": "accepted", "outputs": {
-        "review": str(out / "criterion-review.md"), "targets": [str(out / "targets" / "AC1.md"), "/gone/x.md"]}}))
-    app = results_app([Step("criterion-screen-1", "pass", "pass", "S1", "criterion-screen", out=str(out),
-                            result="accepted")])
+    app = results_app([review_step("review-1")])
     async with app.run_test(size=(140, 40)) as pilot:
         await settle(app, pilot)
         await pilot.press("2", "enter")
         await pilot.pause()
-        text = detail_text(app)
-        assert "1  criterion-review.md" in text and "2  targets/AC1.md" in text and "3  /gone/x.md" in text
-        assert "1–3: open an output" in str(app.screen.query_one("#detail-hint").render())
-        await pilot.press("1")
+        detail = app.screen
+        assert isinstance(detail, StepDetail)
+        await pilot.press("1")                                              # report.md
         await pilot.pause()
         assert isinstance(app.screen, OutputView)
-        assert app.screen.query_one("#detail").border_title == "criterion-review.md"
-        assert [m.source for m in app.screen.query("#detail-body Markdown")] == ["# Criterion review\n\n- AC1 revised: A1\n"]
+        assert app.screen.query_one("#detail").border_title == "report.md"
+        assert [m.source for m in app.screen.query("#detail-body Markdown")] == [
+            (RECORDS / "review-1" / "report.md").read_text()]
         await pilot.press("escape")
         await pilot.pause()
-        assert isinstance(app.screen, StepDetail)                          # back to the step, not out of it
-        await pilot.press("3")
+        assert app.screen is detail                                         # back to the step, not out of it
+        await pilot.press("2")                                              # reviews/
         await pilot.pause()
-        assert "This output is not there" in detail_text(app)
-        await pilot.press("escape", "9")                                    # no ninth output: nothing opens
+        folder = app.screen
+        assert folder is not detail and not isinstance(folder, OutputView)
+        assert "reviews" in folder.query_one("#detail").border_title
+        text = detail_text(app)
+        assert "1  claude.md" in text and "2  codex.md" in text
+        await pilot.press("1")                                              # reviews/claude.md
+        await pilot.pause()
+        assert isinstance(app.screen, OutputView)
+        assert app.screen.query_one("#detail").border_title.endswith("claude.md")
+        assert [m.source for m in app.screen.query("#detail-body Markdown")] == [
+            (RECORDS / "review-1" / "reviews" / "claude.md").read_text()]
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen is folder
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen is detail
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, (StepDetail, OutputView)) and app.screen is not folder
+
+
+async def test_entries_past_the_ninth_are_listed_with_no_key(tmp_path):
+    from autoflow_ide.detail import OutputView
+
+    out = tmp_path / "build-1"
+    out.mkdir()
+    for n in range(1, 12):
+        (out / f"a{n:02}.md").write_text(f"# a{n:02}\n")
+    app = results_app([Step("build-1", "running", None, "S1", "build", out=str(out))])
+    async with app.run_test(size=(140, 60)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("2", "enter")
+        await pilot.pause()
+        text = detail_text(app)
+        assert all(f"{n}  a{n:02}.md" in text for n in range(1, 12))     # all 11 listed
+        assert "1–9" in str(app.screen.query_one("#detail-hint").render())
+        await pilot.press("9")
+        await pilot.pause()
+        assert isinstance(app.screen, OutputView) and app.screen.query_one("#detail").border_title == "a09.md"
+        await pilot.press("escape", "0")                                    # no key opens the tenth or eleventh
         await pilot.pause()
         assert isinstance(app.screen, StepDetail)
-        await pilot.press("escape")
-        await pilot.pause()
-        assert not isinstance(app.screen, (StepDetail, OutputView))
 
 
 # Steps past the pane's height scroll into view (#69)
