@@ -197,11 +197,14 @@ def test_the_session_gets_the_address_as_given_so_it_clones_that_way():
 
 
 def test_config_settings_and_where_each_was_set():
-    """config.py without a key (coordinator v0.7.0-rc9): each setting with the file that set it, or the default."""
+    """config.py without a key (coordinator 0.8.0-rc2, #83): each setting with the file that set it, or the
+    default."""
     home = "/home/claude/fxhome"
     assert parse_config((FIXTURES / "config-default.txt").read_text()) == {
         "root": Setting(f"{home}/.autoflow/coordination", None),
-        "base": Setting(f"{home}/work/coordinator", None)}
+        "base": Setting(f"{home}/work/coordinator", None),
+        "modules": Setting(f"{home}/work/autoflow-module", None),
+        "home": Setting(f"{home}/.autoflow", None)}
     assert parse_config((FIXTURES / "config-global.txt").read_text())["base"] == Setting(
         f"{home}/work/coordinator", f"{home}/.autoflow/coordination.json")
     assert parse_config((FIXTURES / "config-local.txt").read_text())["base"] == Setting(

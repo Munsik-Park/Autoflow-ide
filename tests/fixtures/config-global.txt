@@ -1,4 +1,8 @@
 root	/home/claude/fxhome/.autoflow/coordination	(default)
 base	/home/claude/fxhome/work/coordinator	(/home/claude/fxhome/.autoflow/coordination.json)
+modules	/home/claude/fxhome/work/autoflow-module	(default)
+home	/home/claude/fxhome/.autoflow	(default)
 runs	/home/claude/fxhome/.autoflow/coordination/runs
 records	/home/claude/fxhome/.autoflow/coordination/records
+approval-key	/home/claude/fxhome/.autoflow/coordination/approval-key
+user-modules	/home/claude/fxhome/.autoflow/modules

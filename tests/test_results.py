@@ -1,77 +1,109 @@
-"""Reading what a module run left in its output folder, on output recorded from AutoFlow v0.7.0
-(tests/fixtures/README.md)."""
+"""Reading what a module run left: the entries of its work folder, and from its end record whether the run has
+ended and which entries were written after the end (#83). On the records of a run of autoflow-coordinator 0.8
+(tests/fixtures/README.md), and on folders made here for the cases no recording has."""
+import json
+import os
+import shutil
 from pathlib import Path
 
-import json
+from autoflow_ide import results
+from autoflow_ide.results import OUTPUT_LIMIT, output_path, read_output
 
-from autoflow_ide.results import OUTPUT_LIMIT, output_path, read_outcome, read_output
-
-RECORDS = Path(__file__).parent / "fixtures" / "records" / "autoflow-sandbox-6-results"
-
-
-def test_an_evaluation():
-    outcome = read_outcome(str(RECORDS / "plan-1"))
-    assert (outcome.folder, outcome.has_result, outcome.status) == (True, True, "accepted")
-    assert outcome.outputs == ["evaluation.json"]          # result.json names it where the run wrote it
-    evaluation = outcome.evaluation
-    assert evaluation.scores == [("Decision grounds", "9"), ("Verification fit", "9"), ("Scope", "9"), ("Security", "9")]
-    assert evaluation.summary.startswith("GATE:PLAN, issue #4, first evaluation")
-    assert len(evaluation.recommendations) == 7
-    first = evaluation.recommendations[0]
-    assert (first.severity, first.item, first.subject) == (
-        "Low", "Decision grounds", "feature-design.md > Decisions > D4 (Holds under)")
-    assert first.finding.startswith("D4 does not mention the stdout encoding")
-    assert (outcome.findings, outcome.failure, outcome.defects, outcome.lacked, outcome.unreadable) == (None, None, [], [], [])
+RUN = "autoflow-coordinator-119-2026-11-19-180359-3cbd8c18"
+RECORDS = Path(__file__).parent / "fixtures" / "records" / RUN
 
 
-def test_review_findings():
-    outcome = read_outcome(str(RECORDS / "review-1"))
-    assert outcome.status == "accepted" and outcome.evaluation is None
-    assert outcome.findings.startswith("# Review findings — Munsik-Park/autoflow-sandbox#8 (issue #4)")
-    assert outcome.outputs == ["reviews/claude.md", "reviews/codex.md", "review-findings.md"]
+def entries(work, sub=""):
+    """(name, written after the end) of each entry the detail lists, in its order; `sub` a folder inside the work
+    folder, as the detail opens it."""
+    return [(e.name, e.after_end) for e in work.entries(sub)]
 
 
-def test_what_a_run_lacked():
-    outcome = read_outcome(str(RECORDS / "build-2"))
-    assert outcome.status == "accepted"
-    assert outcome.outputs == ["commits.json", "build-report.md"]
-    [(missing, instead)] = outcome.lacked
-    assert missing.startswith("A Windows environment") and instead.startswith("The F1 test's acceptance")
+def copied(tmp_path, name="review-1"):
+    """A copy of a recorded module run, its work folder and its end record beside it, at another place: the end
+    record's paths are still those of the recorded records folder (#83)."""
+    shutil.copytree(RECORDS / name, tmp_path / name)
+    shutil.copyfile(RECORDS / f"{name}.ended.json", tmp_path / f"{name}.ended.json")
+    return tmp_path / name
 
 
-def test_refused_at_check_in():
-    outcome = read_outcome(str(RECORDS / "review-2"))
-    assert (outcome.status, outcome.outputs) == ("refused", [])
-    assert outcome.defects == ["param 'pr' does not match ^[^/]+/[^#]+#[0-9]+$: 8"]
+def test_a_review_run_of_the_0_8_coordinator():
+    # Its end record lists the files under /home/claude/fx/records/…, which are this folder's (#83).
+    work = results.read_work(str(RECORDS / "review-1"))
+    assert (work.folder, work.ended, work.unreadable) == (True, True, [])
+    assert entries(work) == [("report.md", False), ("reviews/", False)]
+    assert entries(work, "reviews") == [("claude.md", False), ("codex.md", False)]
+    assert [e.path for e in work.entries()] == [RECORDS / "review-1" / "report.md", RECORDS / "review-1" / "reviews"]
 
 
-def test_failed():
-    outcome = read_outcome(str(RECORDS / "review-3"))
-    assert outcome.status == "failed"
-    assert outcome.failure.startswith("# Review — failure (issue #6)")
-    assert (outcome.outputs, outcome.findings) == (["failure.md"], None)
+def test_a_file_written_after_the_end_is_marked_and_one_gone_is_not_shown(tmp_path):
+    folder = copied(tmp_path)
+    (folder / "late.md").write_text("written after the end record\n")
+    (folder / "reviews" / "codex.md").unlink()
+    work = results.read_work(str(folder))
+    assert entries(work) == [("late.md", True), ("report.md", False), ("reviews/", False)]
+    assert entries(work, "reviews") == [("claude.md", False)]
 
 
-def test_no_result_yet_and_no_folder(tmp_path):
-    running = read_outcome(str(RECORDS / "review-4"))
-    assert (running.folder, running.has_result, running.status) == (True, False, None)
-    gone = read_outcome(str(tmp_path / "nothing"))
-    assert (gone.folder, gone.has_result) == (False, False)
+def test_a_link_to_a_folder_is_not_marked(tmp_path):
+    # ended.py lists the files by os.walk, which does not go into a link to a folder (#83).
+    folder = copied(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "a.txt").write_text("a\n")
+    os.symlink(tmp_path / "elsewhere", folder / "linked")
+    work = results.read_work(str(folder))
+    assert entries(work) == [("linked/", False), ("report.md", False), ("reviews/", False)]
 
 
-def test_unreadable_files_are_named(tmp_path):
-    (tmp_path / "result.json").write_text("{not json")
-    (tmp_path / "evaluation.json").write_text("[]")
-    outcome = read_outcome(str(tmp_path))
-    assert outcome.has_result and outcome.status is None
-    assert [u.split(":")[0] for u in outcome.unreadable] == ["result.json", "evaluation.json"]
+def test_a_folder_holding_a_file_written_after_the_end_is_marked(tmp_path):
+    folder = copied(tmp_path)
+    (folder / "reviews" / "late.md").write_text("a third reviewer, after the end\n")
+    work = results.read_work(str(folder))
+    assert entries(work) == [("report.md", False), ("reviews/", True)]
+    assert entries(work, "reviews") == [("claude.md", False), ("codex.md", False), ("late.md", True)]
 
 
-def test_a_listed_output_is_found_where_result_json_names_it():
-    outcome = read_outcome(str(RECORDS / "review-1"))
-    paths = [output_path(str(RECORDS / "review-1"), o) for o in outcome.outputs]
-    assert paths[-1] == RECORDS / "review-1" / "review-findings.md" and read_output(paths[-1]).kind == "markdown"
+def test_entries_are_sorted_by_name_and_folders_marked(tmp_path):
+    folder = tmp_path / "build-1"
+    (folder / "a").mkdir(parents=True)
+    (folder / "b.md").write_text("b\n")
+    (folder / "C.txt").write_text("c\n")
+    (folder / "a" / "x.json").write_text("{}")
+    work = results.read_work(str(folder))
+    assert [e.name for e in work.entries()] == ["C.txt", "a/", "b.md"]
+    assert [e.name for e in work.entries("a")] == ["x.json"]
+
+
+def test_a_run_that_has_not_ended_shows_its_entries_without_marks(tmp_path):
+    folder = tmp_path / "build-1"
+    folder.mkdir()
+    (folder / "draft.md").write_text("so far\n")
+    work = results.read_work(str(folder))
+    assert (work.folder, work.ended, work.unreadable) == (True, False, [])
+    assert entries(work) == [("draft.md", False)]
+
+
+def test_an_end_record_that_cannot_be_read_is_named_and_the_entries_listed_without_marks(tmp_path):
+    folder = tmp_path / "build-1"
+    folder.mkdir()
+    (folder / "draft.md").write_text("so far\n")
+    for content in ("{not json", json.dumps({"status": "ended"}), json.dumps({"status": "ended", "outputs": {}}),
+                    "[]"):
+        (tmp_path / "build-1.ended.json").write_text(content)
+        work = results.read_work(str(folder))
+        assert [u.split(":")[0] for u in work.unreadable] == ["build-1.ended.json"], content
+        assert entries(work) == [("draft.md", False)], content
+
+
+def test_no_work_folder(tmp_path):
+    work = results.read_work(str(tmp_path / "nothing"))
+    assert (work.folder, work.ended) == (False, False)
+    assert work.entries() == []
+
+
+def test_an_output_outside_the_folder_is_where_it_is_written():
     assert output_path("/r/x", "/elsewhere/a.md") == Path("/elsewhere/a.md")
+    assert output_path("/r/x", "reviews/claude.md") == Path("/r/x/reviews/claude.md")
 
 
 def test_an_output_read_to_show_it(tmp_path):
@@ -86,3 +118,5 @@ def test_an_output_read_to_show_it(tmp_path):
     assert (big.kind, big.cut, len(big.text)) == ("markdown", True, OUTPUT_LIMIT)
     assert (read_output(tmp_path / "dir").kind, read_output(tmp_path / "dir").text) == ("folder", "f.txt")
     assert read_output(tmp_path / "gone.md").kind == "missing"
+    report = read_output(RECORDS / "review-1" / "report.md")
+    assert report.kind == "markdown" and report.text == (RECORDS / "review-1" / "report.md").read_text()

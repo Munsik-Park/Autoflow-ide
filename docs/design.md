@@ -10,7 +10,7 @@ Work on a repository issue by issue from one terminal screen. The operator picks
 |---|---|---|
 | Screen | autoflow-ide | Shows issues, runs and sessions; starts runs; moves focus between sessions |
 | Coordination | autoflow-coordinator | Proposes the workflow, prepares runs, opens work sessions, judges results |
-| Modules | autoflow | The contract modules a work session runs |
+| Modules | autoflow-module | The modules a work session runs |
 
 The IDE talks to the coordinator only through the coordinator's command-line tools and the files they write:
 
@@ -45,12 +45,12 @@ The IDE runs in a tmux pane. The coordination session and the work sessions are 
 
 ## Supported versions
 
-The IDE works against fixed versions of autoflow-coordinator and AutoFlow, as the coordinator works against the AutoFlow version in its `VERSION`. The coordinator's `VERSION` follows the AutoFlow version it supports, and improvements to the coordinator for that AutoFlow version go up as `-rcN`. The IDE supports a coordinator version without its `-rcN`, as the coordinator's `prepare.py` compares versions. It reads the coordinator's tool output, such as the JSON of `status.py`, in the shape of that version: an rc adds to the output, and following a newer version is its own change.
+The IDE works against a fixed version of autoflow-coordinator. Improvements to the coordinator for a version go up as `-rcN`. The IDE supports a coordinator version without its `-rcN`, as the coordinator's `prepare.py` compares versions. It reads the coordinator's tool output, such as the JSON of `status.py`, in the shape of that version: an rc adds to the output, and following a newer version is its own change.
 
 | Repository | Supported version |
 |---|---|
-| autoflow-coordinator | v0.7.0 (`VERSION` 0.7.0 or 0.7.0-rcN) |
-| autoflow | v0.7.0, the version that coordinator supports |
+| autoflow-coordinator | v0.8.0 (`VERSION` 0.8.0 or 0.8.0-rcN) |
+| autoflow-module | any commit: the coordinator does not check module versions, and each run records the commit it used |
 
 With `--coordinator`, the IDE reads the clone's `VERSION` and shows on the status line when, without `-rcN`, it differs from the supported one.
 

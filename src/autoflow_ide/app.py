@@ -1198,7 +1198,7 @@ def info_lines(repository: Optional[str], workspace: Optional[Workspace], worksp
                base: Union[Setting, str, None] = None) -> List[Tuple[str, str]]:
     """(label, value) lines for the info above the run pane. The base comes from the coordinator's config.py (a
     Setting, or why it could not be read); the workspace lines from repo.json; the run lines from status.py (its
-    worktree and record folder from coordinator v0.7.0-rc6), the coordination session's pane placed in tmux when
+    worktree and record folder), the coordination session's pane placed in tmux when
     it is found there."""
     lines = [("repo", repository or "(no repository)")]
     if isinstance(base, Setting):

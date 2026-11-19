@@ -22,42 +22,36 @@ def test_parse_recorded_run():
         ("build-1 (rerun)", "S2", "noted", "noted"),
     ]
     assert [(s.name, s.state, s.surface) for s in run.sessions] == [("S1", "exited", "%1"), ("S2", "exited", "%2")]
-    assert (run.reference, run.coordination) == ("analysis-review", None)   # rc2 has no coordination
+    assert (run.reference, run.coordination) == ("analysis-review", None)   # run.env has no COORD_SURFACE
+    assert (run.checkout, run.records) == (None, None)
 
 
-def test_parse_recorded_results():
-    [run] = parse_status(fixture("status-results.json"))
-    records = "/home/claude/fx/records/autoflow-sandbox-6-results/"
-    assert [(s.shown, s.state, s.result, s.out) for s in run.steps] == [
-        ("plan-1", "pass", "accepted", records + "plan-1"),
-        ("build-1", "pass", "accepted", records + "build-1"),
-        ("review-1", "fail", "accepted", records + "review-1"),
-        ("↩ build-2 ← review-1", "pass", "accepted", records + "build-2"),
-        ("CI check (gh)", "pass", None, None),
-        ("↺ review-2 ← review-1", "awaiting", "refused", records + "review-2"),
-        ("↺ review-3 ← review-1", "fail", "failed", records + "review-3"),
-        ("↺ review-4 ← review-1", "running", None, records + "review-4"),
+def test_parse_recorded_reviews():
+    # status.py of 0.8.0-rc2 on a run with three review module runs (tests/fixtures/README.md, #83)
+    [run] = parse_status(fixture("status-reviews.json"))
+    name = "autoflow-coordinator-119-2026-11-19-180359-3cbd8c18"
+    records = f"/home/claude/fx/records/{name}/"
+    assert (run.name, run.issue, run.branch, run.reference, run.coordination) == (
+        name, "119", "issue-119-2026-11-19-180359-3cbd8c18", "review-only", "%1")
+    assert [(s.shown, s.session, s.state, s.verdict, s.result, s.out) for s in run.steps] == [
+        ("S1 (outside AutoFlow: implement and PR)", "S1", "pass", "met", None, None),
+        ("review-1", "S2", "pass", "met", "ended", records + "review-1"),
+        ("S1 fix 1 (review-1 F1)", "S1", "pass", "met", None, None),
+        ("↺ review-2 ← review-1", "S2", "fail", "missed", "ended", records + "review-2"),
+        ("S1 fix 2 (review-2 R2-1)", "S1", "pass", "met", None, None),
+        ("↺ review-3 ← review-2", "S2", "pass", "met", "ended", records + "review-3"),
+        ("S1 fix 3 (review-3 R3-1, comment-only)", "S1", "pass", "met", None, None),
+        ("Merge review artifact (pr-postcard, one-off)", "X1", "pass", "met", None, None),
     ]
-    assert [(s.verdict, s.verdict_text, s.notes) for s in run.steps] == [
-        ("pass", "pass", ""),
-        ("pass", "pass", ""),
-        ("goal missed", "goal missed: F1 holds (Medium)", "F1 to build-2 as its findings"),
-        ("pass", "pass", "findings review-1/review-findings.md"),
-        ("pass", "pass, checks green on head c91b443 | 2 jobs", ""),     # an escaped pipe, read as |
-        ("awaiting verdict", "", "pr given as 8: refused at check-in"),  # a row with no verdict yet
-        ("goal not met", "goal not met", "reached its timeout, 900 s"),
-        (None, None, None),                                               # no row
-    ]
+    review_2 = run.steps[3]
+    assert review_2.verdict_text.startswith("missed: highest holding Medium (R2-1), head reviewed 9a46918")
+    assert review_2.notes.startswith("previous_findings review-1/report.md; round 1 dispositions in the instructions")
+    assert "https://example.com/artifact" in run.steps[-1].verdict_text      # the link replaced (README)
+    assert [(s.name, s.state, s.surface) for s in run.sessions] == [
+        ("S1", "exited", "%2"), ("S2", "exited", "%3"), ("X1", "exited", "%4")]
     assert (run.checkout, run.records) == (
-        "/home/claude/fx/base/autoflow-sandbox/autoflow-sandbox-wt-6-results", records.rstrip("/"))
-
-
-def test_before_rc5_a_step_has_no_out_or_result_and_before_rc6_a_run_no_checkout_or_records():
-    [run] = parse_status(fixture("status-cycle.json"))
-    assert {(s.out, s.result) for s in run.steps} == {(None, None)}
-    [coordination] = parse_status(fixture("status-coordination.json"))   # rc4
-    assert (coordination.checkout, coordination.records) == (None, None)
-    assert {(s.verdict_text, s.notes) for s in run.steps} == {(None, None)}   # rc2: before rc8
+        f"/home/claude/fx/base/autoflow-coordinator/autoflow-coordinator-wt-119-2026-11-19-180359-3cbd8c18",
+        records.rstrip("/"))
 
 
 def test_parse_recorded_coordination_surface():
@@ -118,10 +112,11 @@ from autoflow_ide.runs import SUPPORTED_COORDINATOR, version_notice
 
 def test_version_notice(tmp_path):
     assert version_notice(str(tmp_path)).startswith("coordinator: no ")
-    for same in (SUPPORTED_COORDINATOR, "0.7.0-rc2", "0.7.0-rc3", "0.7.0-rc12"):
+    # Any 0.8.0-rcN is the supported 0.8.0, and 0.7.0 is not (#83).
+    for same in (SUPPORTED_COORDINATOR, "0.8.0", "0.8.0-rc1", "0.8.0-rc2", "0.8.0-rc12"):
         (tmp_path / "VERSION").write_text(same + "\n")
         assert version_notice(str(tmp_path)) == "", same
-    for other in ("0.8.0-rc1", "0.7.1", "0.7.0-beta1"):
+    for other in ("0.7.0", "0.7.0-rc9", "0.8.1", "0.8.0-beta1"):
         (tmp_path / "VERSION").write_text(other + "\n")
         assert version_notice(str(tmp_path)) == f"coordinator {other}, supported {SUPPORTED_COORDINATOR}"
 
@@ -139,6 +134,9 @@ def test_parse_a_return_and_a_rerun():
     assert (by_label["review-2"].entry, by_label["review-2"].cause) == ("rerun", "review-1")
     assert all(s.entry is None and s.cause is None for s in run.steps[:3])
     assert all(s.session_state is None and s.idle_sec is None for s in run.steps)
+    # each module run's work folder, and its end record's status (#83)
+    records = "/home/claude/fx/records/autoflow-sandbox-5-cycle/"
+    assert [(s.out, s.result) for s in run.steps] == [(records + s.label, "ended") for s in run.steps]
 
 
 def test_parse_a_session_waiting_for_input():

@@ -1,0 +1,14 @@
+{
+  "module": "review",
+  "location": "default",
+  "skill": "/home/claude/fx/work/autoflow-module/review/SKILL.md",
+  "skill_sha256": "97b9a1bda7043b1d82bd8a6da43ce56c88e9188e00515e88d8d1822175ba46ae",
+  "modules_commit": "469ec2cbbef258eff8e670c735bd975b721f5f02",
+  "inputs": {
+    "pr": "Munsik-Park/autoflow-coordinator#120",
+    "issue": "/home/claude/fx/records/autoflow-coordinator-119-2026-11-19-180359-3cbd8c18/issue-119.md",
+    "previous_findings": "/home/claude/fx/records/autoflow-coordinator-119-2026-11-19-180359-3cbd8c18/review-1/report.md"
+  },
+  "out": "/home/claude/fx/records/autoflow-coordinator-119-2026-11-19-180359-3cbd8c18/review-2",
+  "instructions": "Re-review after fix 1. Round 1 dispositions by the coordinator: F1 fixed in 9a46918 (coordinator-role.md > Tools, two lines); F2 not fixed (the overlaps docstring states the identity comparison callers rely on, as SETTINGS.md does). Reviewers: claude and codex, each started from the run worktree with its wrapper, which posts nothing: 'bash /home/claude/fx/work/autoflow/scripts/review/claude-review-pr.sh --pr 120 --out <work folder>/reviews/claude.md' and 'bash /home/claude/fx/work/autoflow/scripts/review/codex-review-pr.sh --pr 120 --out <work folder>/reviews/codex.md'. Allow each at most 30 minutes. The criteria are the issue's Scope, Out of scope and Done when, and the repository's rule-document practice (the workspace CLAUDE.md). Name in the report the head each reviewer saw and the PR head (9a46918 at hand-off), whether each round 1 finding is closed, and give every finding a severity. Post nothing on the PR. Keep every file you write in the worktree or the work folder (set TMPDIR to <work folder>/tmp), and leave the worktree as you found it."
+}

@@ -17,13 +17,13 @@ class Step:
     # the session's state and seconds since its last activity, on a running step only
     session_state: Optional[str] = None
     idle_sec: Optional[float] = None
-    # the module run's output folder, as its invocation names it; null for a step with no invocation
+    # the module run's work folder, as its invocation names it; null for a step with no invocation (#83)
     out: Optional[str] = None
-    # the status in that folder's result.json (accepted, refused or failed); null until it is written or
-    # when it cannot be read
+    # the status of the module run's end record beside that folder (ended); null while there is none or when it
+    # cannot be read (#83)
     result: Optional[str] = None
     # the Verdict and Notes cells of the row the step comes from, whole as written ("" when empty); null on a step
-    # with no row, and notes null when the table has no Notes column (from coordinator v0.7.0-rc8)
+    # with no row, and notes null when the table has no Notes column
     verdict_text: Optional[str] = None
     notes: Optional[str] = None
 
@@ -65,7 +65,7 @@ class Run:
     reference: Optional[str] = None
     # the coordination session's surface (a tmux pane id), when run.env records it
     coordination: Optional[str] = None
-    # the run's worktree and its record folder, as run.env writes them (from coordinator v0.7.0-rc6)
+    # the run's worktree and its record folder, as run.env writes them
     checkout: Optional[str] = None
     records: Optional[str] = None
 
