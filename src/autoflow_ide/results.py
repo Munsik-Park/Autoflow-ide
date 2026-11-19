@@ -11,7 +11,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Tuple
 
 ENDED = ".ended.json"
 
@@ -39,14 +39,20 @@ class Work:
 
     def entries(self, sub: str = "") -> List[Entry]:
         """The entries of the work folder, or of the folder `sub` inside it, sorted by name as read_output lists
-        a folder, each marked when it was written after the end."""
+        a folder, each marked when it was written after the end; none when the folder cannot be listed."""
+        return self.listing(sub)[0]
+
+    def listing(self, sub: str = "") -> Tuple[List[Entry], Optional[str]]:
+        """(entries, why the folder could not be listed or None), the reason named as `<folder>: <reason>` like
+        the other read errors, so a folder that cannot be read is not shown as an empty one (#83)."""
         base = self.path / sub if sub else self.path
         try:
             found = [(e.name + ("/" if e.is_dir() else ""), e) for e in base.iterdir()]
-        except OSError:
-            return []
+        except OSError as e:
+            return [], f"{base.name}: {e.strerror or e}"
         prefix = f"{sub.strip('/')}/" if sub else ""
-        return [Entry(name, path, self.after_end(prefix + name)) for name, path in sorted(found, key=lambda f: f[0])]
+        return [Entry(name, path, self.after_end(prefix + name))
+                for name, path in sorted(found, key=lambda f: f[0])], None
 
     def after_end(self, name: str) -> bool:
         if self.listed is None:

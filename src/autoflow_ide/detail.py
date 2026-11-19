@@ -93,7 +93,11 @@ class Listing(ModalScreen):
         super().__init__()
         self.work = work
         self.sub = sub
-        self.entries: List[Entry] = work.entries(sub) if work and work.folder else []
+        self.entries: List[Entry] = []
+        # why the folder could not be listed, shown under "Could not read" (#83)
+        self.error: Optional[str] = None
+        if work and work.folder:
+            self.entries, self.error = work.listing(sub)
 
     def action_open_entry(self, n: int) -> None:
         if not 1 <= n <= min(len(self.entries), OPENABLE):
@@ -133,13 +137,15 @@ class StepDetail(Listing):
                 if self.message:
                     yield Static(self.message, classes="detail-note")
                 else:
-                    if self.work.unreadable:
+                    unreadable = self.work.unreadable + ([self.error] if self.error else [])
+                    if unreadable:
                         yield Static("Could not read", classes="detail-section")
-                        yield Static(listed(self.work.unreadable))
+                        yield Static(listed(unreadable))
                     yield Static("Work folder", classes="detail-section")
                     if not self.work.ended:
                         yield Static("The module run has not ended yet: it has no end record.", classes="detail-note")
-                    yield Static(numbered(self.entries))
+                    if not self.error:
+                        yield Static(numbered(self.entries))
             hint = (f"c: go to {self.step.cause}  ·  " if self.step.cause else "") + opens(len(self.entries)) \
                 + "↑↓ PgUp PgDn: scroll  ·  Esc: close"
             yield Static(hint, id="detail-hint")
@@ -166,7 +172,11 @@ class FolderView(Listing):
             box.border_title = Text(f"{self.sub}/")
             with VerticalScroll(id="detail-body"):
                 yield Static(Text(home_short(str(self.work.path / self.sub))), id="detail-fields")
-                yield Static(numbered(self.entries))
+                if self.error:
+                    yield Static("Could not read", classes="detail-section")
+                    yield Static(listed([self.error]))
+                else:
+                    yield Static(numbered(self.entries))
             yield Static(opens(len(self.entries)) + "↑↓ PgUp PgDn: scroll  ·  Esc: back", id="detail-hint")
 
     def on_mount(self) -> None:
