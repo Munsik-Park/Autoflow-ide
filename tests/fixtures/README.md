@@ -34,7 +34,7 @@ Module run records of the same run, in `records/autoflow-coordinator-119-2026-11
 The repository is public, so in the copied invocations, end records, run.env, runbook.md and sessions.tsv, and in `status-reviews.json`, these were replaced by one Python script (Python 3.15) of plain string replacements, in this order, with nothing else changed:
 
 - the operator's home: `<home>/.autoflow/coordination-module/records` → `/home/claude/fx/records`, `<home>/.autoflow/coordination-module/runs` → `/home/claude/fx/runs`, `<home>/work/coordinator` → `/home/claude/fx/base`, `<home>/work/<folder>` (the folder holding the operator's clones) → `/home/claude/fx/work`, and the rest of `<home>` → `/home/claude`;
-- tmux ids: the window `@361` → `@1`, and the panes of the coordination session, S1, S2 and X1 → `%1`, `%2`, `%3`, `%4`;
+- tmux ids: the window of the coordination session → `@1`, and the panes of the coordination session, S1, S2 and X1 → `%1`, `%2`, `%3`, `%4`;
 - session ids: the coordination session's, S1's, S2's and X1's → `00000000-0000-4000-8000-000000000001` to `…004`, each the same everywhere it occurs;
 - the operator's words quoted verbatim in runbook.md (four quotes, in English and Korean) → `"<operator's instruction>"`, `"<operator's approval>"`, `"<operator's merge report>"` and `"<operator's closing instruction>"`, the line and its other text kept;
 - the claude.ai link in X1's row (and so in that step's `verdict_text`) → `https://example.com/artifact`;
