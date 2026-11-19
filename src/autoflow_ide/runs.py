@@ -9,10 +9,9 @@ from typing import List
 from autoflow_ide.model import Run, Session, Step
 
 
-# The coordinator version whose status.py output the IDE reads, without -rcN. The coordinator's VERSION
-# follows the AutoFlow version it supports, and improvements to the coordinator for that version go up as
-# -rcN; the coordinator itself compares versions without -rcN (prepare.py).
-SUPPORTED_COORDINATOR = "0.7.0"
+# The coordinator version whose status.py output the IDE reads, without -rcN: improvements to the coordinator
+# for a version go up as -rcN, and the coordinator itself compares versions without -rcN (prepare.py) (#83).
+SUPPORTED_COORDINATOR = "0.8.0"
 
 
 class RunSourceError(Exception):
@@ -20,11 +19,11 @@ class RunSourceError(Exception):
 
 
 def parse_status(text: str) -> List[Run]:
-    """Runs from the JSON of status.py: {"runs": [{"name", "issue", "branch", "checkout", "records", "reference",
-    "steps", "coordination", "sessions", "error"?}]}, coordination being {"surface"} or null (from v0.7.0-rc3;
-    absent before), each step's out and result its output folder and result status (from v0.7.0-rc5), checkout
-    and records the run's worktree and record folder (from v0.7.0-rc6), and each step's verdict_text and notes the
-    Verdict and Notes cells of its row (from v0.7.0-rc8); absent before."""
+    """Runs from the JSON of status.py (coordinator 0.8, #83): {"runs": [{"name", "issue", "branch", "checkout",
+    "records", "reference", "now", "steps", "coordination", "sessions", "error"?}]}: checkout and records the
+    run's worktree and record folder, coordination {"surface"} or null, each step's out its module run's work
+    folder and result the status of its end record (null while there is none), and its verdict_text and notes the
+    Verdict and Notes cells of its row. `now` is not read."""
     try:
         runs = []
         for r in json.loads(text)["runs"]:
