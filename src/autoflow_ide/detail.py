@@ -162,9 +162,10 @@ class FolderView(Listing):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="detail") as box:
-            box.border_title = f"{self.sub}/"
+            # Names a module run wrote, shown as written, never read as markup (#83).
+            box.border_title = Text(f"{self.sub}/")
             with VerticalScroll(id="detail-body"):
-                yield Static(home_short(str(self.work.path / self.sub)), id="detail-fields")
+                yield Static(Text(home_short(str(self.work.path / self.sub))), id="detail-fields")
                 yield Static(numbered(self.entries))
             yield Static(opens(len(self.entries)) + "↑↓ PgUp PgDn: scroll  ·  Esc: back", id="detail-hint")
 
@@ -188,9 +189,10 @@ class OutputView(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         output = self.output
         with Vertical(id="detail") as box:
-            box.border_title = self.name_shown
+            # A path from a work folder, shown as written, never read as markup (#83).
+            box.border_title = Text(self.name_shown)
             with VerticalScroll(id="detail-body"):
-                yield Static(home_short(str(output.path)), id="detail-fields")
+                yield Static(Text(home_short(str(output.path))), id="detail-fields")
                 if output.kind in ("missing", "unreadable"):
                     yield Static(output.text, classes="detail-note")
                 elif output.kind == "markdown":
