@@ -1780,6 +1780,41 @@ async def test_entries_past_the_ninth_are_listed_with_no_key(tmp_path):
         assert isinstance(app.screen, StepDetail)
 
 
+async def test_names_in_a_work_folder_are_shown_as_written_and_not_read_as_markup(tmp_path):
+    # A module run names its files: a name holding [ is shown as it is, and no tag in it styles or acts (#83).
+    from textual.content import Content
+    from autoflow_ide.detail import FolderView, OutputView
+
+    out = tmp_path / "build-1"
+    (out / "[@click=app.quit]q").mkdir(parents=True)
+    (out / "[@click=app.quit]q" / "[bold]b.md").write_text("# b\n")
+    app = results_app([Step("build-1", "running", None, "S1", "build", out=str(out))])
+    async with app.run_test(size=(140, 40)) as pilot:
+        await settle(app, pilot)
+        await pilot.press("2", "enter")
+        await pilot.pause()
+        assert "1  [@click=app.quit]q/" in detail_text(app)
+        await pilot.press("1")
+        await pilot.pause()
+        assert isinstance(app.screen, FolderView)
+        title = Content.from_markup(app.screen.query_one("#detail").border_title)
+        assert (title.plain, title.spans) == ("[@click=app.quit]q/", [])
+        assert str(app.screen.query_one("#detail-fields").render()).endswith("/build-1/[@click=app.quit]q")
+        assert "1  [bold]b.md" in detail_text(app)
+        await pilot.click("#detail-fields")                                 # no link to click on
+        await pilot.pause()
+        assert app.is_running and isinstance(app.screen, FolderView)
+        await pilot.press("1")
+        await pilot.pause()
+        assert isinstance(app.screen, OutputView)
+        title = Content.from_markup(app.screen.query_one("#detail").border_title)
+        assert (title.plain, title.spans) == ("[@click=app.quit]q/[bold]b.md", [])
+        assert str(app.screen.query_one("#detail-fields").render()).endswith("/[@click=app.quit]q/[bold]b.md")
+        await pilot.click("#detail-fields")
+        await pilot.pause()
+        assert app.is_running and isinstance(app.screen, OutputView)
+
+
 # Steps past the pane's height scroll into view (#69)
 
 async def test_the_run_table_scrolls_to_a_step_below_the_pane():
