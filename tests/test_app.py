@@ -506,13 +506,13 @@ def results_app(steps):
         return [Issue(6, "six")]
 
     async def runs(coordinator):
-        return [Run("autoflow-sandbox-6-results", steps, issue="6")]
+        return [Run("autoflow-sandbox-6-detail", steps, issue="6")]
 
     return IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c", run_loader=runs)
 
 
 def detail_text(app):
-    """The detail's text: its fields and section titles, the evaluation, and the source of each Markdown part."""
+    """The detail's text: its fields, section titles, cells, notes and entries, and the source of each Markdown part."""
     parts = [str(w.render()) for w in app.screen.query("#detail-body Static")]
     parts += [w.source for w in app.screen.query("#detail-body Markdown")]
     return "\n".join(parts)
@@ -1055,7 +1055,7 @@ def test_row_cells_show_what_the_verdict_and_the_table_leave_out():
     assert row_cells(Step("s2", "running", None, "S1", "review", verdict_text="", notes=None)) == []
 
 
-async def test_the_detail_shows_the_row_cells_above_the_output_folder():
+async def test_the_detail_shows_the_row_cells_above_the_work_folder():
     steps = [Step("F1 fix (outside AutoFlow)", "pass", "pass", "X1", verdict_text="pass, [head] 253901c pushed",
                   notes="x1-2-instruction.txt"),
              review_step("review-1", verdict_text="goal missed: F1 holds (Medium)", notes="F1 fixed by X1, then re-review")]

@@ -17,7 +17,7 @@ class Step:
     # the session's state and seconds since its last activity, on a running step only
     session_state: Optional[str] = None
     idle_sec: Optional[float] = None
-    # the module run's work folder, as its invocation names it; null for a step with no invocation
+    # the module run's work folder, as its invocation names it; null for a step with no invocation (#83)
     out: Optional[str] = None
     # the status of the module run's end record beside that folder (ended); null while there is none or when it
     # cannot be read (#83)

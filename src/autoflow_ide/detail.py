@@ -60,7 +60,7 @@ def listed(lines: List[str]) -> Text:
     return Text("\n".join(f"• {line}" for line in lines) + "\n")
 
 
-# The entries past the ninth are listed but have no key to open them.
+# The entries past the ninth are listed but have no key to open them (#83).
 OPENABLE = 9
 AFTER_END = "written after the end"
 
