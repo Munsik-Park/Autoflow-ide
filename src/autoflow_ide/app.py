@@ -1013,28 +1013,28 @@ class IdeApp(App):
 
     async def refuses_at_enter(self, key: IssueKey, opener: Optional[str]) -> bool:
         """Whether a session of issue `key` is refused, from its state read now; says why. It opens only when each
-        input is known to permit it: the issue listed, open (read from GitHub when the list does not show it open)
-        and not a pull request; for `s`, also its windows and the runs read again, no other open in progress and
-        no session. One that cannot be read refuses (#85)."""
+        input is known to permit it: the issue listed, and open and not a pull request as GitHub gives it now; for
+        `s`, also its windows and the runs read again, no other open in progress and no session. One that cannot be
+        read refuses (#85)."""
         label = self.label(key)
         issue = self.find_issue(key)
         if not self.still_startable(key, issue):
             return True
-        if issue.state != "open":
-            try:
-                found = await self.lookup(*key)
-            except IssueSourceError as e:
-                self.set_message("start", f"{label}: nothing opened: its state could not be read: {e}")
-                return True
-            if key in self.lookups:
-                self.lookups[key] = found
-                self.show_issues()
-            if found.pull:
-                self.set_message("start", f"{label} is a pull request")
-                return True
-            if found.state != "open":
-                self.set_message("start", f"{label} is {found.state or 'of unknown state'}")
-                return True
+        # Read every time: a row shows "open" until the next read of the list, which can be after it closed (#85).
+        try:
+            found = await self.lookup(*key)
+        except IssueSourceError as e:
+            self.set_message("start", f"{label}: nothing opened: its state could not be read: {e}")
+            return True
+        if key in self.lookups:
+            self.lookups[key] = found
+            self.show_issues()
+        if found.pull:
+            self.set_message("start", f"{label} is a pull request")
+            return True
+        if found.state != "open":
+            self.set_message("start", f"{label} is {found.state or 'of unknown state'}")
+            return True
         if opener == "s":
             if self.windows_unread(key, await self.read_windows_of(key)):
                 return True

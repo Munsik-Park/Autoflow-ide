@@ -409,6 +409,11 @@ async def test_the_closed_row_goes_when_its_run_ends():
 from autoflow_ide.start import StartError
 
 
+async def open_lookup(repository, number):
+    """GitHub as the state read at Enter sees an issue: open (#85)."""
+    return Issue(number, f"issue {number}", state="open")
+
+
 def starting_app(starter, focuser=None):
     async def loader(repository):
         return [Issue(4, "four"), Issue(3, "three")]
@@ -417,7 +422,7 @@ def starting_app(starter, focuser=None):
         return RECORDED_RUNS      # issue 3 has a run
 
     return IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c", run_loader=runs,
-                  starter=starter, focuser=focuser)
+                  starter=starter, focuser=focuser, lookup=open_lookup)
 
 
 async def test_s_starts_a_run_for_the_issue_and_goes_back_to_it_the_second_time():
@@ -717,9 +722,10 @@ def windows_app(windows, open_issues, runs, lookup, idle=0.2, check=0.05, **kw):
 
 
 def lookup_states(states, asked):
+    """Each issue's state as GitHub gives it: `states` by number, open for the others (#85)."""
     async def lookup(repository, number):
         asked.append(number)
-        return Issue(number, f"issue {number}", state=states[number])
+        return Issue(number, f"issue {number}", state=states.get(number, "open"))
     return lookup
 
 
@@ -1126,6 +1132,7 @@ def every_app(runs=(), recent=("autoflow-coordinator", "autoflow-sandbox", "gone
     async def given_runs(coordinator):
         return list(runs)
 
+    kw.setdefault("lookup", open_lookup)  # not the real gh (#85)
     return IdeApp(coordinator="/c", loader=given_loader or loader, run_loader=run_loader or given_runs,
                   workspaces_reader=workspaces_reader or workspaces, state_file=state_file, **kw)
 
@@ -3313,6 +3320,8 @@ async def test_hash_while_an_instructions_box_is_open_leaves_that_box_and_its_en
     starts, asked = [], []
 
     async def lookup(repository, number):
+        if number == 4:
+            return Issue(4, "four")                                 # the state read at Enter, not a find (#85)
         asked.append(number)
         return Issue(number, "an old one", state="closed")
 
@@ -3719,3 +3728,25 @@ async def test_an_open_started_during_the_enter_reads_of_s_keeps_s_from_opening_
         await settle(app, pilot)
         assert starter.calls == [("Munsik-Park/autoflow-sandbox", 4, "by S")]
         assert list(app.started.values()) == [["%9"]] and not app.opening
+
+
+@pytest.mark.parametrize("key", ["s", "S"])
+async def test_an_issue_the_list_shows_open_but_github_says_closed_at_enter_gets_no_session(key):
+    # The issue closed on GitHub while its box was open, before the next read of the list: its row still shows it
+    # open, and the state read at Enter says closed, so nothing opens and the status line says why (#85).
+    starts, asked = [], []
+    states = {}
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")],
+                       lookup=lookup_states(states, asked), starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press(key)
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display
+        states[4] = "closed"
+        assert app.find_issue(("Munsik-Park/autoflow-sandbox", 4)).state == "open"
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert asked == [4]
+        assert starts == [] and not box.display and "#4 is closed" in status(app)
