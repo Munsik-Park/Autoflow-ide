@@ -186,13 +186,21 @@ def instruction(workspace: str, issue: int, text: str = "") -> str:
     return f"Workspace {workspace}, issue #{issue}." + (f" {text}" if text else "")
 
 
+def printable(text: str) -> str:
+    """`text` without its control and other non-printable characters. They would reach the line editor of the
+    shell the line is typed into, which acts on them (Ctrl-U erases the line typed so far), whatever the quoting
+    (#85)."""
+    return "".join(c for c in text if c.isprintable())
+
+
 def window_name(workspace: str, issue: int) -> str:
     return f"{workspace}#{issue}"
 
 
 async def open_coordination(coordinator: str, name: str, text: str, token: Optional[Path] = None) -> str:
     """Open a tmux window named `name` with a shell in the coordinator clone, start Claude Code there with
-    `text` as its first prompt, and return the new pane's id. tmux moves to the new window.
+    `text` as its first prompt, its non-printable characters dropped, and return the new pane's id. tmux moves to
+    the new window.
     With `token` (a workspace's gh-token), Claude Code starts with that token as GH_TOKEN: the typed line reads
     the file, as the coordinator's tools/launch.sh does, so the token is neither typed nor in tmux's arguments."""
     if not os.environ.get("TMUX"):
@@ -201,8 +209,8 @@ async def open_coordination(coordinator: str, name: str, text: str, token: Optio
     pane = (await run("tmux", "new-window", "-c", clone, "-n", name, "-P", "-F", "#{pane_id}")).strip()
     if not pane.startswith("%"):
         raise StartError(f"tmux new-window: no pane id ({pane!r})")
-    # As the coordinator's tmux terminal types a line: literal keys, then Enter.
-    line = f"claude {shlex.quote(text)}"
+    # As the coordinator's tmux terminal types a line: literal keys, then Enter; printable characters only (#85).
+    line = f"claude {shlex.quote(printable(text))}"
     if token is not None:
         line = f"GH_TOKEN=$(cat {shlex.quote(str(token))}) {line}"
     await run("tmux", "send-keys", "-t", pane, "-l", "--", line)

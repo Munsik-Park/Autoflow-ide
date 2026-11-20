@@ -21,7 +21,7 @@ from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
 from autoflow_ide.screens import waiting
 from autoflow_ide.sessions import CoordinationSession, sessions_of
 from autoflow_ide.start import (Setting, StartError, TokenError, Workspace, coordinator_base, coordinator_workspace,
-                               coordinator_workspace_entry, coordinator_workspaces, create_workspace, read_token,
+                               coordinator_workspace_entry, coordinator_workspaces, create_workspace, printable, read_token,
                                repository_of, setting_source, start_run)
 from autoflow_ide.state import chosen, read_recent, state_path, write_recent
 from autoflow_ide.tables import ColumnSpec, fill, flex_width
@@ -919,19 +919,16 @@ class IdeApp(App):
     def action_start_run(self) -> None:
         """`s`: open the issue's coordination session, or go back to the one it has (#85)."""
         issue = self.current
-        if issue is None or not self.can_start(issue):
+        if issue is None:
             return
         key = issue_key(issue)
         if self.current_session is not None:
+            # A session's row: go to it, as Enter does, whatever the issue now is; the refusals are for opening (#85).
             self.run_worker(self.go_back(key, self.current_session), group="start-focus", exclusive=True)
+        elif not self.can_start(issue):
             return
-        sessions = self.sessions(issue)
-        if len(sessions) > 1:
-            self.set_message("start", f"{self.label(key)} has {len(sessions)} sessions: highlight one, or S for another")
         elif self.opening.get(key):
             self.set_message("start", f"{self.label(key)}: opening the coordination session")
-        elif sessions and sessions[0].run:
-            self.set_message("start", f"{self.label(key)} already has a run: {sessions[0].run.name}")
         else:
             self.run_worker(self.start_or_go_back(key), group="start-focus", exclusive=True)
 
@@ -943,7 +940,8 @@ class IdeApp(App):
 
     async def start_or_go_back(self, key: IssueKey) -> None:
         """Read the issue's windows again, so one the periodic check has not found yet is gone back to; open the
-        instructions box when the issue still has no session (#85)."""
+        instructions box when the issue still has no session; otherwise go back to its one session with no run, or
+        say why not (#85)."""
         await self.read_windows_of(key)
         issue = self.find_issue(key)
         sessions = self.sessions(issue) if issue else []
@@ -997,7 +995,7 @@ class IdeApp(App):
 
     def ask_instructions(self, key: IssueKey) -> None:
         """Open the box for the instructions of a new coordination session of issue `key` (#85)."""
-        self.finding, self.adding, self.instructing = None, False, key
+        self.box_for(instructing=key)
         box = self.query_one("#find", Input)
         box.border_title = f"Instructions for {self.label(key)}"
         box.placeholder = "focus or approach; Enter to start, Esc to cancel"
@@ -1066,7 +1064,7 @@ class IdeApp(App):
         if self.static or not self.coordinator:
             self.set_message("workspace", "add workspace: needs --coordinator")
             return
-        self.finding, self.adding = None, True
+        self.box_for(adding=True)
         box = self.query_one("#find", Input)
         box.border_title = "New workspace"
         box.placeholder = "GitHub address"
@@ -1279,7 +1277,7 @@ class IdeApp(App):
         if self.static or group is None or not group.repository:
             self.set_message("find", "find: no repository to look in")
             return
-        self.finding, self.adding = group.repository, False
+        self.box_for(finding=group.repository)
         box = self.query_one("#find", Input)
         box.border_title = ""
         box.placeholder = f"#number in {group.name}"
@@ -1300,15 +1298,22 @@ class IdeApp(App):
             self.show_issues()
             self.set_message("find", "")
 
+    def box_for(self, finding: Optional[str] = None, adding: bool = False,
+                instructing: Optional[IssueKey] = None) -> None:
+        """Set what the shared box is open for, one purpose, so an Enter in it does what its last opener asked
+        (#85)."""
+        self.finding, self.adding, self.instructing = finding, adding, instructing
+
     def end_find(self) -> None:
-        self.finding, self.adding, self.instructing = None, False, None
+        self.box_for()
         self.query_one("#find", Input).display = False
         self.query_one("#issues", DataTable).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "find" and self.instructing is not None:
-            # Outer blanks removed, the rest as typed; none, or only blanks, starts it as before (#85).
-            key, text = self.instructing, event.value.strip()
+            # Control and other non-printable characters dropped, outer blanks removed, the rest as typed; none, or
+            # only blanks, starts it as before (#85).
+            key, text = self.instructing, printable(event.value).strip()
             self.end_find()
             self.open_session(key, text)
             return

@@ -374,3 +374,28 @@ async def test_start_run_with_no_instructions_types_todays_line(tmp_path, monkey
     log = fake_tmux_args(tmp_path, monkeypatch)
     await start_run(clone, "Munsik-Park/autoflow-sandbox", 4, "")
     assert typed_line(log) == "claude 'Workspace autoflow-sandbox, issue #4.'"
+
+
+# Control characters in the instructions, as a paste can carry them (#85): the shell's line editor would act on
+# them whatever the quoting (Ctrl-U erases the typed `claude '…`), so they are not typed.
+
+@pytest.mark.parametrize("text, kept", [
+    ("\x15touch x #", "touch x #"),                         # Ctrl-U, then a command
+    ("stop\x03 here", "stop here"),                         # Ctrl-C
+    ("one\rtwo", "onetwo"),                                 # CR
+    ("one\ntwo", "onetwo"),                                 # LF
+    ("\x1b[2Jclear \x1b]0;title\x07it", "[2Jclear ]0;titleit"),   # ESC sequences and BEL
+    ("del\x7fete", "delete"),                               # DEL
+    ("c1\x85\x9bcontrols", "c1controls"),                   # C1 controls (NEL, CSI)
+    ("tab\there", "tabhere"),
+    ("한글 지시 그대로", "한글 지시 그대로"),                      # printable non-ASCII is kept
+])
+async def test_start_run_drops_control_characters_from_the_instructions(tmp_path, monkeypatch, text, kept):
+    base = tmp_path / "base"
+    workspace(base, "autoflow-sandbox", "Munsik-Park/autoflow-sandbox")
+    clone = coordinator_clone(tmp_path, base)
+    log = fake_tmux_args(tmp_path, monkeypatch)
+    await start_run(clone, "Munsik-Park/autoflow-sandbox", 4, text)
+    line = typed_line(log)
+    assert all(c.isprintable() for c in line)
+    assert shlex.split(line) == ["claude", "Workspace autoflow-sandbox, issue #4. " + kept]

@@ -3242,3 +3242,86 @@ async def test_the_step_detail_and_its_cause_are_those_of_the_highlighted_sessio
             assert not isinstance(app.screen, StepDetail)
             assert app.query_one("#run", DataTable).cursor_row == cause
             await pilot.press("1")
+
+
+# Fixes after audit-1 and quality-1 (#85)
+
+async def test_the_instructions_box_passes_no_control_characters():
+    # audit-1 F1: a paste keeps the control characters of its first line; they are dropped, then the blanks.
+    starts = []
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("S")
+        await settle(app, pilot)
+        app.query_one("#find", Input).value = "\x15 touch x \x1b[2J#"
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [("Munsik-Park/autoflow-sandbox", 4, "touch x [2J#")]
+
+
+async def test_hash_after_an_unsubmitted_instructions_box_finds_and_opens_nothing():
+    # quality-1 Q1: `#` reopens the box for a find; its Enter finds the number and starts no session.
+    starts, asked = [], []
+
+    async def lookup(repository, number):
+        asked.append(number)
+        return Issue(number, "an old one", state="closed")
+
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")], lookup=lookup,
+                       starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("S")
+        await settle(app, pilot)
+        await pilot.press("tab")                                    # focus leaves the box, which stays shown
+        await pilot.press("number_sign", "1", "2", "enter")
+        await settle(app, pilot)
+        assert starts == [] and 12 in asked
+        assert cursor_key(app) == "12"
+
+
+async def test_w_after_an_unsubmitted_instructions_box_adds_the_workspace_and_opens_no_session():
+    # quality-1 Q1, with `w`.
+    starts, created = [], []
+
+    async def creator(coordinator, address):
+        created.append(address)
+        return "%20"
+
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")],
+                       starter=recording_starter(starts), workspace_creator=creator)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("S")
+        await settle(app, pilot)
+        await pilot.press("tab", "w")
+        await settle(app, pilot)
+        app.query_one("#find", Input).value = "Munsik-Park/other"
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [] and created == ["Munsik-Park/other"]
+
+
+async def test_s_on_a_session_row_of_a_closed_issue_goes_to_the_session():
+    # quality-1 Q2: issue 6 left the open list closed and still has its runs; `s` on a session's row goes there,
+    # as Enter does, and on the issue's row it still says the issue is closed.
+    starts, focused = [], []
+
+    async def focuser(surface):
+        focused.append(surface)
+
+    app = sessions_app(SessionWindows({}), open_issues=[Issue(4, "four")], lookup=lookup_states({6: "closed"}, []),
+                       starter=recording_starter(starts), focuser=focuser)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await settle(app, pilot)
+        by_run = dict(zip(await runs_by_row(app, pilot, "6"), children(app, "6")))
+        await highlight(app, pilot, by_run[RUN_C.name])
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert focused == ["%2"] and starts == []
+        await highlight(app, pilot, "6")
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert focused == ["%2"] and "#6 is closed" in status(app)
