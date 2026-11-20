@@ -683,7 +683,7 @@ class FakeWindows:
 
     async def find(self, workspace):
         assert workspace == "autoflow-sandbox"
-        return dict(self.open)
+        return {n: [w] for n, w in self.open.items()}      # every window of a name, a list each (#85)
 
     async def screens(self, window):
         number = int(window.name.split("#")[1])
@@ -1232,7 +1232,7 @@ class EveryWindows(FakeWindows):
         self.open = windows
 
     async def find(self, workspace):
-        return {n: w for (ws, n), w in self.open.items() if ws == workspace}
+        return {n: [w] for (ws, n), w in self.open.items() if ws == workspace}     # a list each (#85)
 
     async def screens(self, window):
         return ["still"]
@@ -2066,7 +2066,8 @@ async def test_a_work_session_waiting_for_input_marks_its_issue():
         app.refresh_runs()
         await settle(app, pilot)
         assert app.current.run.name == "autoflow-sandbox-3-k"
-        assert marks(app) == {"3": WAIT_MARK, "4": ""}
+        # The two runs are two sessions, each a row under the issue (#85); the issues' own rows:
+        assert {k: m for k, m in marks(app).items() if "/" not in k} == {"3": WAIT_MARK, "4": ""}
 
 
 async def test_a_recorded_status_with_a_session_waiting_for_input_marks_its_issue():

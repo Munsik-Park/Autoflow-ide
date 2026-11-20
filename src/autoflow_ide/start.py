@@ -180,9 +180,10 @@ def find_workspace(base: Path, repository: str) -> str:
     return find_workspace_entry(base, repository).name
 
 
-def instruction(workspace: str, issue: int) -> str:
-    """The operator's first instruction to the coordination session."""
-    return f"Workspace {workspace}, issue #{issue}."
+def instruction(workspace: str, issue: int, text: str = "") -> str:
+    """The operator's first instruction to the coordination session, with the operator's instructions for the run
+    (its focus or approach) after it, as given."""
+    return f"Workspace {workspace}, issue #{issue}." + (f" {text}" if text else "")
 
 
 def window_name(workspace: str, issue: int) -> str:
@@ -224,16 +225,18 @@ async def coordinator_workspace_entry(coordinator: str, repository: str) -> Work
     return find_workspace_entry(await workspace_base(coordinator), repository)
 
 
-async def start_run(coordinator: str, repository: str, issue: int) -> str:
-    """Open the coordination session for `issue` of `repository`, with its workspace's token when it has one;
-    returns its pane id. Nothing is opened when the workspace's gh-token cannot be used."""
+async def start_run(coordinator: str, repository: str, issue: int, instructions: str = "") -> str:
+    """Open a coordination session for `issue` of `repository`, with its workspace's token when it has one and
+    `instructions` after the first prompt; returns its pane id. Nothing is opened when the workspace's gh-token
+    cannot be used. The line is typed into tmux's default shell, which must be a POSIX shell: the prompt is one
+    word quoted by shlex.quote."""
     workspace = await coordinator_workspace_entry(coordinator, repository)
     try:
         token = token_file(workspace)
     except TokenError as e:
         raise StartError(str(e)) from e
     return await open_coordination(coordinator, window_name(workspace.name, issue),
-                                   instruction(workspace.name, issue), token)
+                                   instruction(workspace.name, issue, instructions), token)
 
 
 # Adding a workspace: the operator gives the repository; the coordination session asks for the rest (the clone, the

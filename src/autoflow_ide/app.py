@@ -19,11 +19,12 @@ from autoflow_ide.issues import IssueSourceError, gh_issue, gh_issues, repositor
 from autoflow_ide.model import Issue, Run, placeholder_issues
 from autoflow_ide.runs import RunSourceError, coordinator_runs, version_notice
 from autoflow_ide.screens import waiting
+from autoflow_ide.sessions import CoordinationSession, sessions_of
 from autoflow_ide.start import (Setting, StartError, TokenError, Workspace, coordinator_base, coordinator_workspace,
                                coordinator_workspace_entry, coordinator_workspaces, create_workspace, read_token,
                                repository_of, setting_source, start_run)
 from autoflow_ide.state import chosen, read_recent, state_path, write_recent
-from autoflow_ide.tables import ColumnSpec, fill
+from autoflow_ide.tables import ColumnSpec, fill, flex_width
 from autoflow_ide.version import ide_version
 from autoflow_ide.windows import TmuxWindows, Window, WindowError, pane_places
 
@@ -32,7 +33,9 @@ WorkspaceFinder = Callable[[str, str], Awaitable[str]]
 IssueLookup = Callable[[str, int], Awaitable[Issue]]
 RunLoader = Callable[[str], Awaitable[List[Run]]]
 Focuser = Callable[[str], Awaitable[None]]
-Starter = Callable[[str, str, int], Awaitable[str]]
+# Opens a coordination session: the coordinator clone, the repository, the issue and the operator's instructions for
+# the run ("" for none); its pane id (#85).
+Starter = Callable[[str, str, int, str], Awaitable[str]]
 WorkspaceReader = Callable[[str, str], Awaitable[Workspace]]
 Placer = Callable[[], Awaitable[Dict[str, str]]]
 WorkspacesReader = Callable[[str], Awaitable[List[Workspace]]]
@@ -73,6 +76,10 @@ FOLDED_MARK = "▸"
 RUN_COLUMNS: List[ColumnSpec] = [("Step", "step", 4), ("Module run", "name", None), ("Session", "session", 7),
                                  ("State", "state", 8), ("Verdict", "verdict", 16)]
 SESSION_COLUMNS: List[ColumnSpec] = [("Session", "name", 7), ("State", "state", None)]
+# Before the label of a coordination session's row, under its issue's row (#85).
+SESSION_INDENT = "└ "
+# show_issue's default: keep the session shown when the issue stays the same (#85).
+KEEP = object()
 
 
 def issue_key(issue: Issue) -> IssueKey:
@@ -120,11 +127,12 @@ class IdeApp(App):
         ("2", "focus_pane('run')", "Run"),
         ("3", "focus_pane('sessions')", "Sessions"),
         ("r", "refresh_issues", "Refresh"),
-        ("s", "start_run", "Start run"),
-        ("a", "toggle_running", "Running only"),
+        ("s", "start_run", "Start"),
+        ("S", "new_session", "New session"),
+        ("a", "toggle_running", "Running"),
         ("number_sign", "find", "Issue #"),
         ("w", "add_workspace", "Workspace"),
-        ("escape", "close_find", "Clear found"),
+        ("escape", "close_find", "Clear"),
         ("q", "quit", "Quit"),
     ]
 
@@ -199,8 +207,15 @@ class IdeApp(App):
         self.run_loader = run_loader or coordinator_runs
         self.focuser = focuser or focus_surface
         self.starter = starter or start_run
-        # Coordination sessions opened from this IDE, by issue: their pane, until the issue has a run.
-        self.started: Dict[IssueKey, str] = {}
+        # Coordination sessions opened from this IDE, by issue: their panes, until a run names the pane as its
+        # coordination surface, or the pane's window was found and is gone (#85).
+        self.started: Dict[IssueKey, List[str]] = {}
+        # The opened panes a window check has found in a window.
+        self.opened_seen: Set[str] = set()
+        # Opens in progress, by issue: the instructions were given and the starter has not returned (#85).
+        self.opening: Dict[IssueKey, int] = {}
+        # The issue the box is open for, to take the instructions of a new coordination session (#85).
+        self.instructing: Optional[IssueKey] = None
         self.run_refresh_sec = run_refresh_sec
         self.issue_refresh_sec = issue_refresh_sec
         self.runs: List[Run] = []
@@ -218,19 +233,30 @@ class IdeApp(App):
         self.placer = placer or pane_places
         # Where each tmux pane is ("2:1 autoflow-coordinator#59"), by pane id, as last read.
         self.places: Dict[str, str] = {}
-        # The coordination session windows, by (workspace, issue): (window id, its screen, when first seen).
-        self.screens: Dict[Tuple[str, int], Tuple[str, str, float]] = {}
-        # The issues whose coordination session window showed a prompt at the last check that read its screen (#79).
-        self.waiting_windows: Set[IssueKey] = set()
+        # The coordination session windows of each issue, as last found: an issue can have several (#85).
+        self.windows_found: Dict[IssueKey, List[Window]] = {}
+        # Each window's screen and when it was first seen, by window id.
+        self.screens: Dict[str, Tuple[str, float]] = {}
+        # The windows that showed a prompt at the last check that read their screen, by id (#79, #85).
+        self.waiting_windows: Set[str] = set()
         # When an issue was last looked up and not found closed (found open, or the lookup failed), so it is not
         # looked up on every check.
         self.not_found_closed: Dict[IssueKey, float] = {}
-        # When each window's issue was first found closed with no run, by (workspace, issue), until a check finds
-        # it otherwise: the wait to close the window counts from the later of this and its screen's last change.
-        self.finished_since: Dict[Tuple[str, int], float] = {}
+        # When each window's issue was first found closed with no run, by window id, until a check finds it
+        # otherwise: the wait to close the window counts from the later of this and its screen's last change.
+        self.finished_since: Dict[str, float] = {}
         # The steps of each shown run, by run name, as last read: what a step change is compared against.
         self.step_marks: Dict[str, List[Tuple[str, str, Optional[str]]]] = {}
         self.current: Optional[Issue] = None
+        # The coordination session whose row the cursor is on, under the current issue; None on the issue's row (#85).
+        self.current_session: Optional[CoordinationSession] = None
+        # (issue, pane, run name) of the one session the highlighted row shows, so a rebuild that changes the rows
+        # finds it again; None on a workspace's row or the row of an issue with several sessions (#85).
+        self.identity: Optional[Tuple[IssueKey, Optional[str], Optional[str]]] = None
+        # What each row of the issues table is: its issue, and its session on a session's row.
+        self.row_targets: Dict[str, Tuple[Issue, Optional[CoordinationSession]]] = {}
+        # The name of the run the run pane shows: its cursor row is kept only while it is the same run (#85).
+        self.shown_run_name: Optional[str] = None
         # The repository of the workspace row the cursor is on, when it is on one.
         self.on_header: Optional[str] = None
         # The row key of the issues table the cursor was last put on by render_issues, or last shown from a
@@ -394,20 +420,111 @@ class IdeApp(App):
             return
         self.placed = key
         if self.every and self.group_of(key):
-            self.on_header, self.current = key, None
-        else:
+            self.on_header, self.current, self.current_session, self.identity = key, None, None, None
+        elif key in self.row_targets:
             self.on_header = None
-            self.current = next((i for i in self.issues if self.row_key(i) == key), self.current)
+            self.current, self.current_session = self.row_targets[key]
+            self.remember_shown(self.current, self.current_session)
 
     def waits(self, issue: Issue) -> bool:
-        """Whether `issue` waits for the operator: its window showed a prompt, or a work session of any of its
-        runs, matched as finished() matches them, is in WAITING_INPUT (#79)."""
-        if issue_key(issue) in self.waiting_windows:
+        """Whether `issue` waits for the operator: one of its windows showed a prompt, or a work session of any of
+        its runs, matched as finished() matches them, is in WAITING_INPUT (#79, #85)."""
+        if any(w.id in self.waiting_windows for w in self.windows_found.get(issue_key(issue), [])):
             return True
-        runs = [r for r in self.runs if r.issue == str(issue.number) and self.run_repository(r) == issue.repository]
-        if issue.run is not None:
-            runs.append(issue.run)
-        return any(s.state == WAITING_INPUT for r in runs for s in r.sessions)
+        return any(s.state == WAITING_INPUT for r in self.issue_runs(issue) for s in r.sessions)
+
+    def session_mark(self, session: CoordinationSession) -> Union[str, Text]:
+        """The first cell of a coordination session's row: its window's prompt or its run's, then its run (#85)."""
+        if ((session.window is not None and session.window.id in self.waiting_windows)
+                or (session.run is not None and any(s.state == WAITING_INPUT for s in session.run.sessions))):
+            return Text(WAIT_MARK, style="bold")
+        return RUN_MARK if session.run else ""
+
+    # The coordination sessions of an issue (#85)
+
+    def issue_runs(self, issue: Issue) -> List[Run]:
+        """The active runs of `issue`; the given run of a given issue."""
+        if not self.coordinator:
+            return [issue.run] if issue.run else []
+        return [r for r in self.runs if r.issue == str(issue.number) and self.run_repository(r) == issue.repository]
+
+    def sessions(self, issue: Issue) -> List[CoordinationSession]:
+        key = issue_key(issue)
+        return sessions_of(self.windows_found.get(key, []), self.issue_runs(issue), self.started.get(key, []))
+
+    def session_keys(self, issue: Issue, sessions: List[CoordinationSession]) -> List[str]:
+        """The row key of each session: its issue's row key and its pane, with its run's name when the pane holds
+        several runs; a run with no pane by its name."""
+        panes = [s.pane for s in sessions]
+        keys = []
+        for session in sessions:
+            part = session.pane if session.pane else session.run.name
+            if session.pane and session.run and panes.count(session.pane) > 1:
+                part = f"{session.pane}/{session.run.name}"
+            keys.append(f"{self.row_key(issue)}/{part}")
+        return keys
+
+    def session_label(self, session: CoordinationSession) -> str:
+        """The run's name once prepared; before, where its pane is in tmux (session:index), or the pane's id."""
+        if session.run:
+            return session.run.name
+        place = self.places.get(session.pane or "")
+        return place.split(" ")[0] if place else (session.pane or "")
+
+    def remember_shown(self, issue: Optional[Issue], session: Optional[CoordinationSession]) -> None:
+        """Keep which one session the highlighted row shows: the session of its row, or the one session of an
+        issue's row."""
+        if issue is not None and session is None:
+            sessions = self.sessions(issue)
+            session = sessions[0] if len(sessions) == 1 else None
+        self.identity = ((issue_key(issue), session.pane, session.run.name if session.run else None)
+                         if issue is not None and session is not None else None)
+
+    def resolve_session(self, issue: Issue, sessions: List[CoordinationSession]) -> Optional[CoordinationSession]:
+        """The session whose row the cursor goes on after the rows are made again: the one shown before, found by
+        its pane and run, then by its run, then by its pane (the earliest of its runs); none when the issue has one
+        session or none, when nothing matches, or when the issue's own row was shown with several sessions."""
+        if len(sessions) < 2 or self.identity is None or self.identity[0] != issue_key(issue):
+            return None
+        _, pane, run = self.identity
+
+        def name(session: CoordinationSession) -> Optional[str]:
+            return session.run.name if session.run else None
+
+        for matches in (lambda s: s.pane == pane and name(s) == run,
+                        lambda s: run is not None and name(s) == run,
+                        lambda s: pane is not None and s.pane == pane):
+            found = next((s for s in sessions if matches(s)), None)
+            if found is not None:
+                return found
+        return None
+
+    def current_run(self) -> Optional[Run]:
+        """The run the highlighted row shows: its session's, or an issue's with one session; none on the row of an
+        issue with several sessions."""
+        if self.current is None:
+            return None
+        if self.current_session is not None:
+            return self.current_session.run
+        sessions = self.sessions(self.current)
+        if len(sessions) > 1:
+            return None
+        return sessions[0].run if sessions else self.current.run
+
+    def parent_sessions(self) -> int:
+        """The number of sessions of the highlighted issue when its own row, with several, is highlighted."""
+        if self.current is None or self.current_session is not None:
+            return 0
+        count = len(self.sessions(self.current))
+        return count if count > 1 else 0
+
+    def find_issue(self, key: IssueKey) -> Optional[Issue]:
+        return next((i for i in self.issues if issue_key(i) == key), None)
+
+    def sessions_shape(self) -> Tuple:
+        """What the session rows are, to tell whether a read changed them."""
+        return tuple((issue_key(i), tuple((s.pane, s.run.name if s.run else None, s.window.id if s.window else None)
+                                          for s in self.sessions(i))) for i in self.issues)
 
     def mark(self, issue: Issue) -> Union[str, Text]:
         """The first cell of an issue's row (#79)."""
@@ -418,7 +535,11 @@ class IdeApp(App):
     def render_issues(self) -> None:
         table = self.query_one("#issues", DataTable)
         self.follow_cursor()
+        columns = EVERY_ISSUE_COLUMNS if self.every else ISSUE_COLUMNS
+        # A label too long for the pane is cut in the middle, so runs whose names start alike stay apart (#85).
+        room = flex_width(table.size.width, columns, table.cell_padding) - cell_len(SESSION_INDENT)
         rows: List[Tuple[Optional[str], List[Union[str, Text]]]] = []
+        targets: Dict[str, Tuple[Issue, Optional[CoordinationSession]]] = {}
         headers = self.headers()
         for group in self.groups:
             issues = self.shown(group)
@@ -428,17 +549,33 @@ class IdeApp(App):
                 folded = group.repository in self.folded and not self.running_only
                 rows.append((group.repository, [FOLDED_MARK if folded else UNFOLDED_MARK,
                                                  Text(group_title(group, folded), style="bold")]))
-                rows += [(self.row_key(i), [self.mark(i), f"{i.number}  {issue_title(i)}"]) for i in issues]
-            else:
-                rows += [(self.row_key(i), [self.mark(i), str(i.number), issue_title(i)]) for i in issues]
-        fill(table, EVERY_ISSUE_COLUMNS if self.every else ISSUE_COLUMNS, rows)
+            for issue in issues:
+                key = self.row_key(issue)
+                targets[key] = (issue, None)
+                rows.append((key, [self.mark(issue), f"{issue.number}  {issue_title(issue)}"] if self.every
+                             else [self.mark(issue), str(issue.number), issue_title(issue)]))
+                sessions = self.sessions(issue)
+                if len(sessions) < 2:
+                    continue  # one session or none: the issue's row alone, as before (#85)
+                for session, session_key in zip(sessions, self.session_keys(issue, sessions)):
+                    targets[session_key] = (issue, session)
+                    label = SESSION_INDENT + cut_middle(self.session_label(session), room)
+                    rows.append((session_key, [self.session_mark(session), label] if self.every
+                                 else [self.session_mark(session), "", label]))
+        fill(table, columns, rows)
+        self.row_targets = targets
         # With only running issues shown and none to show, the empty pane says why.
         none = self.running_only and not any(self.shown(g) for g in self.groups)
         if none or self.messages.get("running"):
             self.set_message("running", "no issue has a run" if none else "")
         current = self.current_in()
         if current:
-            table.move_cursor(row=table.get_row_index(self.row_key(current)))
+            sessions = self.sessions(current)
+            self.current_session = self.resolve_session(current, sessions)
+            row = self.row_key(current)
+            if self.current_session is not None:
+                row = self.session_keys(current, sessions)[sessions.index(self.current_session)]
+            table.move_cursor(row=table.get_row_index(row))
         elif headers:
             # On a workspace's row: the one the cursor was on, the folded one of the highlighted issue, or the first.
             for header in (self.on_header, self.current.repository if self.current else None, headers[0]):
@@ -593,16 +730,20 @@ class IdeApp(App):
                 self.show_runs(runs)
         except NoMatches:
             pass  # the app is closing: its widgets are gone
-        if runs is not None and any(r.coordination for r in self.own_runs()):
+        if runs is not None and (any(r.coordination for r in self.own_runs()) or self.started or self.windows_found):
             await self.load_places()
 
     async def load_places(self) -> None:
-        """Where the panes are, for the coordination session of the shown run; kept as last read on a failure."""
+        """Where the panes are, for the coordination session of the shown run and the labels of sessions with no
+        run yet; kept as last read on a failure."""
         try:
-            self.places = await self.placer()
+            places = await self.placer()
         except WindowError:
             return
+        changed, self.places = places != self.places, places
         try:
+            if changed and (self.started or self.windows_found):
+                self.render_issues()
             self.render_info()
         except NoMatches:
             pass  # the app is closing: its widgets are gone
@@ -632,25 +773,52 @@ class IdeApp(App):
             pass  # the app is closing: its widgets are gone
 
     def show_runs(self, runs: List[Run]) -> None:
-        before = {issue_key(i) for i in self.issues if i.run}
+        # Runs are told apart by name: an issue can have several, so one starting or ending is not seen from the
+        # issues that have a run (#85).
+        before = {r.name for r in self.own_runs()}
+        self.follow_cursor()
+        # Whether the operator looks at a run, as the rows were before this read.
+        on_run = self.current is not None and self.current_run() is not None
         self.runs = runs
         self.attach_runs()
-        after = {issue_key(i) for i in self.issues if i.run}
-        started = after - before
-        if any(self.started.pop(k, None) for k in after):
+        own = self.own_runs()
+        after = {r.name for r in own}
+        started = [r for r in own if r.name not in before]
+        if self.drop_prepared_opens():
             self.set_message("start", "")  # the coordination session prepared the run
-        self.folded -= {repository for repository, _ in started}  # a run that starts shows in its workspace
-        self.follow_cursor()
-        if started and (self.current is None or self.current.run is None):
-            # The operator is not looking at a run: move to the issue whose run just started.
-            self.on_header = None
-            self.current = next(i for i in self.ordered() if issue_key(i) in started)
+        self.folded -= {self.run_repository(r) for r in started}  # a run that starts shows in its workspace
+        if started and not on_run:
+            # The operator is not looking at a run: move to the session whose run just started.
+            target = next(((i, r) for i in self.ordered() for r in started
+                           if r.issue == str(i.number) and self.run_repository(r) == i.repository), None)
+            if target is not None:
+                issue, run = target
+                self.on_header, self.current, self.current_session = None, issue, None
+                self.identity = (issue_key(issue), run.coordination, run.name)
         self.render_issues()
         self.show_issue(self.current_in())
         self.count_runs()
         if before - after or self.steps_changed():
             # A run ended, or a step of a run changed: a merge may have closed an issue in the meantime.
             self.action_refresh_issues()
+
+    def drop_prepared_opens(self) -> bool:
+        """Drop the opened panes a run of their issue names as its coordination surface: the run is that session
+        now. Whether any was dropped."""
+        dropped = False
+        for key in list(self.started):
+            named = {r.coordination for r in self.runs
+                     if r.issue == str(key[1]) and self.run_repository(r) == key[0]}
+            kept = [p for p in self.started[key] if p not in named]
+            dropped = dropped or len(kept) < len(self.started[key])
+            self.set_opened(key, kept)
+        return dropped
+
+    def set_opened(self, key: IssueKey, panes: List[str]) -> None:
+        if panes:
+            self.started[key] = panes
+        else:
+            self.started.pop(key, None)
 
     def count_runs(self) -> None:
         own = len(self.own_runs())
@@ -735,10 +903,8 @@ class IdeApp(App):
 
     # Starting a run
 
-    def action_start_run(self) -> None:
-        issue = self.current
-        if issue is None:
-            return
+    def can_start(self, issue: Issue) -> bool:
+        """Whether a coordination session can be opened for `issue`; says why not on the status line."""
         key = issue_key(issue)
         if self.static or not self.coordinator or not issue.repository:
             self.set_message("start", "start: needs --coordinator and --repo or --workspace")
@@ -746,34 +912,151 @@ class IdeApp(App):
             self.set_message("start", f"{self.label(key)} is a pull request")
         elif issue.closed:
             self.set_message("start", f"{self.label(key)} is closed")
-        elif issue.run:
-            self.set_message("start", f"{self.label(key)} already has a run: {issue.run.name}")
-        elif key in self.started:
-            # Opened from here, its run not prepared yet: go back to that coordination session.
-            self.run_worker(self.focus_started(key), group="start", exclusive=True)
         else:
-            self.run_worker(self.start(key), group="start", exclusive=True)
+            return True
+        return False
 
-    async def start(self, key: IssueKey) -> None:
+    def action_start_run(self) -> None:
+        """`s`: open the issue's coordination session, or go back to the one it has (#85)."""
+        issue = self.current
+        if issue is None or not self.can_start(issue):
+            return
+        key = issue_key(issue)
+        if self.current_session is not None:
+            self.run_worker(self.go_back(key, self.current_session), group="start-focus", exclusive=True)
+            return
+        sessions = self.sessions(issue)
+        if len(sessions) > 1:
+            self.set_message("start", f"{self.label(key)} has {len(sessions)} sessions: highlight one, or S for another")
+        elif self.opening.get(key):
+            self.set_message("start", f"{self.label(key)}: opening the coordination session")
+        elif sessions and sessions[0].run:
+            self.set_message("start", f"{self.label(key)} already has a run: {sessions[0].run.name}")
+        else:
+            self.run_worker(self.start_or_go_back(key), group="start-focus", exclusive=True)
+
+    def action_new_session(self) -> None:
+        """`S`: open another coordination session for the issue, whatever sessions or runs it has (#85)."""
+        issue = self.current
+        if issue is not None and self.can_start(issue):
+            self.ask_instructions(issue_key(issue))
+
+    async def start_or_go_back(self, key: IssueKey) -> None:
+        """Read the issue's windows again, so one the periodic check has not found yet is gone back to; open the
+        instructions box when the issue still has no session (#85)."""
+        await self.read_windows_of(key)
+        issue = self.find_issue(key)
+        sessions = self.sessions(issue) if issue else []
+        if not sessions:
+            self.ask_instructions(key)
+        elif len(sessions) > 1:
+            self.set_message("start", f"{self.label(key)} has {len(sessions)} sessions: highlight one, or S for another")
+        elif sessions[0].run:
+            self.set_message("start", f"{self.label(key)} already has a run: {sessions[0].run.name}")
+        else:
+            await self.go_back(key, sessions[0])
+
+    async def read_windows_of(self, key: IssueKey) -> None:
+        """The windows of issue `key`, read now; kept as last found when they cannot be read."""
+        try:
+            group = self.group_of(key[0])
+            if self.every:
+                if group is None or group.workspace is None:
+                    return
+                workspace = group.workspace.name
+            else:
+                if self.workspace is None:
+                    self.workspace = await self.workspace_finder(self.coordinator, self.repository)
+                workspace = self.workspace
+            found = (await self.windows.find(workspace)).get(key[1], [])
+        except (StartError, WindowError):
+            return
+        before = self.sessions_shape()
+        self.set_windows(key, found)
+        if self.sessions_shape() != before:
+            self.render_issues()
+            self.show_issue(self.current_in())
+
+    def set_windows(self, key: IssueKey, windows: List[Window]) -> None:
+        """Make `windows` the found windows of issue `key`. An opened pane found in a window is kept while its
+        window is; one whose window was found and is gone is dropped."""
+        if windows:
+            self.windows_found[key] = windows
+        else:
+            self.windows_found.pop(key, None)
+        panes = {p for w in windows for p in w.panes}
+        kept = []
+        for pane in self.started.get(key, []):
+            if pane in panes:
+                self.opened_seen.add(pane)
+            elif pane in self.opened_seen:
+                self.opened_seen.discard(pane)
+                continue
+            kept.append(pane)
+        self.set_opened(key, kept)
+
+    def ask_instructions(self, key: IssueKey) -> None:
+        """Open the box for the instructions of a new coordination session of issue `key` (#85)."""
+        self.finding, self.adding, self.instructing = None, False, key
+        box = self.query_one("#find", Input)
+        box.border_title = f"Instructions for {self.label(key)}"
+        box.placeholder = "focus or approach; Enter to start, Esc to cancel"
+        box.restrict = None
+        box.value = ""
+        box.display = True
+        box.focus()
+
+    def open_session(self, key: IssueKey, text: str) -> None:
+        """Open a coordination session with the instructions given. Marked as in progress before the starter is
+        awaited, so `s` meanwhile opens no second one; an open is not cancelled by a later one."""
+        self.opening[key] = self.opening.get(key, 0) + 1
+        self.run_worker(self.start(key, text), group=f"start-{key[0]}-{key[1]}")
+
+    async def start(self, key: IssueKey, text: str = "") -> None:
         self.set_message("start", f"{self.label(key)}: opening the coordination session")
         try:
-            pane = await self.starter(self.coordinator, *key)
+            pane = await self.starter(self.coordinator, *key, text)
         except StartError as e:
             self.set_message("start", f"start {self.label(key)}: {e}")
             return
-        self.started[key] = pane
+        finally:
+            self.opening[key] = self.opening.get(key, 1) - 1
+            if not self.opening[key]:
+                del self.opening[key]
+        self.started[key] = self.started.get(key, []) + [pane]
         self.set_message("start", f"{self.label(key)}: coordination session in {pane}")
         group = self.group_of(key[0])
         if self.every and group:
             self.remember(group.name, True)
+        issue = self.find_issue(key)
+        if issue is None:
+            return
+        try:
+            # Its row is added at once, with the cursor on it.
+            self.follow_cursor()
+            self.on_header, self.current, self.current_session = None, issue, None
+            self.identity = (key, pane, None)
+            self.render_issues()
+            self.show_issue(self.current_in())
+        except NoMatches:
+            pass  # the app is closing: its widgets are gone
 
-    async def focus_started(self, key: IssueKey) -> None:
-        pane = self.started[key]
+    async def go_back(self, key: IssueKey, session: CoordinationSession) -> None:
+        """Move tmux focus to the coordination pane of `session`."""
+        pane = session.run.coordination if session.run and session.run.coordination else session.pane
+        if not pane:
+            self.set_message("start", f"{self.label(key)}: {session.run.name if session.run else 'session'}: no pane")
+            return
         try:
             await self.focuser(pane)
         except FocusError as e:
-            del self.started[key]
-            self.set_message("start", f"{self.label(key)}: {pane}: {e}; press s to open it again")
+            if pane in self.started.get(key, []):
+                self.set_opened(key, [p for p in self.started[key] if p != pane])
+                self.set_message("start", f"{self.label(key)}: {pane}: {e}; press s to open it again")
+                self.render_issues()
+                self.show_issue(self.current_in())
+            else:
+                self.set_message("start", f"{self.label(key)}: {pane}: {e}")
             return
         self.set_message("start", f"{self.label(key)}: coordination session in {pane}")
 
@@ -839,7 +1122,8 @@ class IdeApp(App):
         again just before the window is closed, so an issue reopened during the wait keeps it. One issue can take
         several runs, so an open issue keeps its window after a run ends; a merge closes the issue before the run
         ends, so a run keeps it too."""
-        found: Dict[Tuple[str, int], Tuple[str, Window]] = {}
+        # Every window of each issue, by window id: each is watched and closed on its own (#85).
+        found: Dict[str, Tuple[IssueKey, Window]] = {}
         try:
             if self.every:
                 places = [(g.workspace.name, g.repository) for g in self.groups if g.workspace]
@@ -848,70 +1132,80 @@ class IdeApp(App):
                     self.workspace = await self.workspace_finder(self.coordinator, self.repository)
                 places = [(self.workspace, self.repository)]
             for workspace, repository in places:
-                for number, window in (await self.windows.find(workspace)).items():
-                    found[(workspace, number)] = (repository, window)
+                for number, windows in (await self.windows.find(workspace)).items():
+                    for window in windows:
+                        found[window.id] = ((repository, number), window)
         except (StartError, WindowError) as e:
             self.set_message("windows", f"windows: {e}")
             return
+        before = self.sessions_shape()
+        by_issue: Dict[IssueKey, List[Window]] = {}
+        for key, window in found.values():
+            by_issue.setdefault(key, []).append(window)
+        for key in set(self.windows_found) | set(by_issue) | set(self.started):
+            self.set_windows(key, by_issue.get(key, []))
         now = time.monotonic()
         self.screens = {k: s for k, s in self.screens.items() if k in found}
         self.finished_since = {k: t for k, t in self.finished_since.items() if k in found}
         # Every screen first, each pane captured once, so the marks do not wait for the lookups below (#79).
-        panes: Dict[Tuple[str, int], List[str]] = {}
-        for (workspace, number), (repository, window) in found.items():
+        panes: Dict[str, List[str]] = {}
+        for window_id, (key, window) in found.items():
             try:
-                panes[(workspace, number)] = await self.windows.screens(window)
+                panes[window_id] = await self.windows.screens(window)
             except WindowError as e:
                 self.set_message("windows", f"{window.name}: {e}")
-        self.mark_waiting(found, panes)
-        for (workspace, number), (repository, window) in found.items():
-            if (workspace, number) not in panes:
+        self.mark_waiting(found, panes, self.sessions_shape() != before)
+        for window_id, (key, window) in found.items():
+            if window_id not in panes:
                 continue
-            screen = "\n".join(panes[(workspace, number)])
-            seen = self.screens.get((workspace, number))
-            if seen is None or seen[0] != window.id or seen[1] != screen:
-                self.screens[(workspace, number)] = seen = (window.id, screen, now)
-            key = (repository, number)
-            since = self.finished_since.get((workspace, number))
+            screen = "\n".join(panes[window_id])
+            seen = self.screens.get(window_id)
+            if seen is None or seen[0] != screen:
+                self.screens[window_id] = seen = (screen, now)
+            since = self.finished_since.get(window_id)
             if not await self.finished(key, now, ask=since is None):
-                self.finished_since.pop((workspace, number), None)
+                self.finished_since.pop(window_id, None)
                 continue
             if since is None:
                 # When the lookup returned, not when the check began: a slow lookup does not use up the wait.
-                self.finished_since[(workspace, number)] = since = time.monotonic()
-            if now - max(seen[2], since) < self.window_idle_sec:
+                self.finished_since[window_id] = since = time.monotonic()
+            if now - max(seen[1], since) < self.window_idle_sec:
                 continue
             if not await self.finished(key, now, ask=True):
                 # Reopened during the wait, or not known: the wait starts again once it is found closed.
-                self.finished_since.pop((workspace, number), None)
+                self.finished_since.pop(window_id, None)
                 continue
             try:
                 await self.windows.close(window)
             except WindowError as e:
                 self.set_message("windows", f"{window.name}: {e}")
                 continue
-            del self.screens[(workspace, number)]
-            del self.finished_since[(workspace, number)]
-            self.started.pop((repository, number), None)
-            self.waiting_windows.discard((repository, number))
-            self.set_message("windows", f"closed {window.name}: #{number} is closed and has no run")
+            del self.screens[window_id]
+            del self.finished_since[window_id]
+            self.waiting_windows.discard(window_id)
+            self.set_windows(key, [w for w in self.windows_found.get(key, []) if w.id != window_id])
+            self.set_opened(key, [p for p in self.started.get(key, []) if p not in window.panes])
+            self.set_message("windows", f"closed {window.name}: #{key[1]} is closed and has no run")
+            self.render_issues()
+            self.show_issue(self.current_in())
 
-    def mark_waiting(self, found: Dict[Tuple[str, int], Tuple[str, Window]],
-                     panes: Dict[Tuple[str, int], List[str]]) -> None:
-        """Keep the issues whose window shows a prompt in any of its panes, and redraw the issues when they
-        changed. A window whose screen could not be read keeps its last judgment until a check reads it; one no
-        longer found is dropped (#79)."""
+    def mark_waiting(self, found: Dict[str, Tuple[IssueKey, Window]], panes: Dict[str, List[str]],
+                     changed: bool = False) -> None:
+        """Keep the windows that show a prompt in any of their panes, and redraw the issues when they changed, or
+        when `changed` (the sessions did). A window whose screen could not be read keeps its last judgment until a
+        check reads it; one no longer found is dropped (#79)."""
         shown = set()
-        for place, (repository, window) in found.items():
-            key = (repository, place[1])
-            if place in panes:
-                if any(waiting(screen) for screen in panes[place]):
-                    shown.add(key)
-            elif key in self.waiting_windows:
-                shown.add(key)
-        if shown != self.waiting_windows:
+        for window_id in found:
+            if window_id in panes:
+                if any(waiting(screen) for screen in panes[window_id]):
+                    shown.add(window_id)
+            elif window_id in self.waiting_windows:
+                shown.add(window_id)
+        if shown != self.waiting_windows or changed:
             self.waiting_windows = shown
             self.render_issues()
+            if changed:
+                self.show_issue(self.current_in())
 
     async def finished(self, key: IssueKey, now: float, ask: bool = True) -> bool:
         """Whether issue `key` is closed and has no active run. Closed is asked of GitHub, not taken from
@@ -956,7 +1250,8 @@ class IdeApp(App):
                 self.on_header = key
                 self.show_issue(None)
                 return
-            self.show_issue(next((i for i in self.issues if self.row_key(i) == key), None))
+            issue, session = self.row_targets.get(key, (None, None))
+            self.show_issue(issue, session)
         except NoMatches:
             pass  # the app is closing: its widgets are gone (#16)
 
@@ -964,10 +1259,16 @@ class IdeApp(App):
         if event.data_table.id == "issues" and self.every and self.group_of(event.row_key.value):
             if not self.running_only:
                 self.fold(event.row_key.value)
+        elif event.data_table.id == "issues":
+            issue, session = self.row_targets.get(event.row_key.value, (None, None))
+            if issue is not None and session is not None:
+                # A coordination session's row: tmux focus goes to its coordination pane (#85).
+                self.run_worker(self.go_back(issue_key(issue), session), group="focus", exclusive=True)
         elif event.data_table.id == "sessions" and event.row_key.value is not None:
             self.run_worker(self.focus_session(event.row_key.value), group="focus", exclusive=True)
         elif event.data_table.id == "run":
-            steps = self.current.run.steps if self.current and self.current.run else []
+            run = self.current_run()
+            steps = run.steps if run else []
             if 0 <= event.cursor_row < len(steps):
                 self.push_screen(StepDetail(steps[event.cursor_row], event.cursor_row + 1), self.go_to_step)
 
@@ -1000,11 +1301,17 @@ class IdeApp(App):
             self.set_message("find", "")
 
     def end_find(self) -> None:
-        self.finding, self.adding = None, False
+        self.finding, self.adding, self.instructing = None, False, None
         self.query_one("#find", Input).display = False
         self.query_one("#issues", DataTable).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "find" and self.instructing is not None:
+            # Outer blanks removed, the rest as typed; none, or only blanks, starts it as before (#85).
+            key, text = self.instructing, event.value.strip()
+            self.end_find()
+            self.open_session(key, text)
+            return
         if event.input.id == "find" and self.adding:
             text = event.value.strip()
             self.end_find()
@@ -1044,7 +1351,7 @@ class IdeApp(App):
         self.folded.discard(group.repository)
         self.follow_cursor()
         self.on_header = None
-        self.current = issue
+        self.current, self.current_session, self.identity = issue, None, None
         self.show_issues()
 
     def action_toggle_running(self) -> None:
@@ -1082,7 +1389,8 @@ class IdeApp(App):
 
     def go_to_step(self, label: Optional[str]) -> None:
         """Highlight the first step named `label` in the run pane (the detail's cause)."""
-        steps = self.current.run.steps if self.current and self.current.run else []
+        run = self.current_run()
+        steps = run.steps if run else []
         index = next((n for n, s in enumerate(steps) if s.label == label), None)
         if index is not None:
             table = self.query_one("#run", DataTable)
@@ -1090,7 +1398,7 @@ class IdeApp(App):
             table.move_cursor(row=index)
 
     async def focus_session(self, key: str) -> None:
-        run = self.current.run if self.current else None
+        run = self.current_run()
         session = next((s for s in run.sessions if s.name == key), None) if run else None
         if session is None or not session.surface:
             self.set_message("focus", f"{key}: no pane")
@@ -1102,14 +1410,23 @@ class IdeApp(App):
             return
         self.set_message("focus", "")
 
-    def show_issue(self, issue: Optional[Issue]) -> None:
-        self.current = issue
+    def show_issue(self, issue: Optional[Issue], session=KEEP) -> None:
+        """Show `issue`, and `session` of it on a session's row; by default the session shown stays while the issue
+        does."""
+        if session is KEEP:
+            same = issue is not None and self.current is not None and issue_key(issue) == issue_key(self.current)
+            session = self.current_session if same else None
+        self.current, self.current_session = issue, session
         if issue is not None:
             self.on_header = None
+        self.remember_shown(issue, session)
         run_table = self.query_one("#run", DataTable)
         sessions = self.query_one("#sessions", DataTable)
-        run_row, session_row = run_table.cursor_row, sessions.cursor_row
-        run = issue.run if issue else None
+        run = self.current_run()
+        # The cursor rows are kept while the same run is shown; another run starts at the top (#85).
+        same_run = run is not None and run.name == self.shown_run_name
+        self.shown_run_name = run.name if run else None
+        run_row, session_row = (run_table.cursor_row, sessions.cursor_row) if same_run else (0, 0)
         steps = run.steps if run else []
         fill(run_table, RUN_COLUMNS,
              ((None, [str(n), s.shown, s.session or "", s.state, s.verdict or ""]) for n, s in enumerate(steps, 1)))
@@ -1127,12 +1444,17 @@ class IdeApp(App):
 
     def render_info(self) -> None:
         """Whose work the selected issue is and where it happens, above its run."""
-        run = self.current.run if self.current else None
+        run = self.current_run()
         group = self.current_group()
         info = self.query_one("#info", Static)
         base = self.base or self.base_error
-        lines = (info_lines(group.repository, group.workspace, group.workspace_error, run, self.places, base) if group
-                 else info_lines(None, None, None, run, self.places, base))
+        pane = self.current_session.pane if self.current_session is not None else None
+        if pane is None and self.current is not None and not self.parent_sessions():
+            sessions = self.sessions(self.current)
+            pane = sessions[0].pane if sessions else None
+        extra = dict(sessions=self.parent_sessions(), pane=pane)
+        lines = (info_lines(group.repository, group.workspace, group.workspace_error, run, self.places, base, **extra)
+                 if group else info_lines(None, None, None, run, self.places, base, **extra))
         info.update(info_text(lines, info.content_size.width))
 
     def current_group(self) -> Optional[Group]:
@@ -1162,13 +1484,14 @@ class IdeApp(App):
             self.set_message(slot, "")
 
     def update_status(self) -> None:
-        issue, run = self.current, self.current.run if self.current else None
+        issue, run = self.current, self.current_run()
         group = self.current_group()
         kind = issue_kind(issue) if issue else ""
+        several = self.parent_sessions()
         parts = [self.messages[s] for s in NOTICE_SLOTS if self.messages.get(s)]
         parts += [(group.repository if group else self.repository) or ("every workspace" if self.every else "(no repository)"),
                   (f"#{issue.number}" + (f" ({kind})" if kind else "")) if issue else "no issue",
-                  run.name if run else "no run"]
+                  f"{several} sessions" if several else run.name if run else "no run"]
         parts += [m for s, m in self.messages.items() if m and s not in NOTICE_SLOTS]
         try:
             self.query_one("#status", Static).update("  |  ".join(parts))
@@ -1195,11 +1518,13 @@ INFO_LABEL_WIDTH = 10
 
 def info_lines(repository: Optional[str], workspace: Optional[Workspace], workspace_error: Optional[str],
                run: Optional[Run], places: Dict[str, str],
-               base: Union[Setting, str, None] = None) -> List[Tuple[str, str]]:
+               base: Union[Setting, str, None] = None, sessions: int = 0,
+               pane: Optional[str] = None) -> List[Tuple[str, str]]:
     """(label, value) lines for the info above the run pane. The base comes from the coordinator's config.py (a
     Setting, or why it could not be read); the workspace lines from repo.json; the run lines from status.py (its
     worktree and record folder), the coordination session's pane placed in tmux when
-    it is found there."""
+    it is found there. With `sessions` (an issue's row with several), their number in place of the run lines; with
+    no run, the session's `pane` (#85)."""
     lines = [("repo", repository or "(no repository)")]
     if isinstance(base, Setting):
         lines.append(("base", f"{home_short(base.value)} ({setting_source(base.source)})"))
@@ -1212,8 +1537,14 @@ def info_lines(repository: Optional[str], workspace: Optional[Workspace], worksp
                           + (f" ({workspace.base_branch})" if workspace.base_branch else "")))
     elif workspace_error:
         lines.append(("workspace", workspace_error))
+    if sessions:
+        lines.append(("sessions", str(sessions)))
+        return lines
     if not run:
         lines.append(("run", "none"))
+        if pane:
+            place = places.get(pane)
+            lines.append(("session", f"tmux {place}" if place else pane))
         return lines
     lines.append(("run", run.name))
     if run.reference:
