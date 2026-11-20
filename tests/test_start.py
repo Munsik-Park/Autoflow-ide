@@ -344,7 +344,7 @@ INSTRUCTIONS = [
 @pytest.mark.parametrize("text", INSTRUCTIONS)
 async def test_start_run_types_the_instructions_as_one_word_of_the_first_prompt(tmp_path, monkeypatch, text):
     # A POSIX shell splits the typed line into exactly `claude` and the prompt: the instructions are neither
-    # split nor expanded (#85, AC3).
+    # split nor expanded (#85).
     base = tmp_path / "base"
     workspace(base, "autoflow-sandbox", "Munsik-Park/autoflow-sandbox")
     clone = coordinator_clone(tmp_path, base)

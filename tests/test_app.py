@@ -2672,7 +2672,7 @@ def session_names(app):
 
 
 async def test_each_session_of_an_issue_is_a_row_under_it_and_two_runs_of_one_pane_are_two_rows():
-    # AC1: every window and every active run of the issue; the two runs of pane %1 are not folded into one row.
+    # Every window and every active run of the issue; the two runs of pane %1 are not folded into one row (#85).
     app = sessions_app()
     async with app.run_test(size=WIDE) as pilot:
         await settle(app, pilot)
@@ -2687,7 +2687,7 @@ async def test_each_session_of_an_issue_is_a_row_under_it_and_two_runs_of_one_pa
 
 
 async def test_a_prompt_in_the_second_window_alone_marks_the_issue_and_that_windows_session():
-    # AC1, AC6: the issue's mark is that of any of its sessions, and each window is judged on its own (#79).
+    # The issue's mark is that of any of its sessions, and each window is judged on its own (#79, #85).
     windows = SessionWindows({6: WINDOWS_6, 8: WINDOWS_8}, {"@2": [CHOICE]})
     app = sessions_app(windows)
     async with app.run_test(size=WIDE) as pilot:
@@ -2709,7 +2709,7 @@ def recording_starter(starts, pane="%9", error=None):
 
 
 async def test_S_opens_another_session_for_an_issue_with_runs_and_adds_its_row_at_once():
-    # AC2: as s does, also when the issue has sessions and runs; the row is there before any window check.
+    # As s does, also when the issue has sessions and runs; the row is there before any window check (#85).
     starts = []
     windows = SessionWindows({6: WINDOWS_6, 8: WINDOWS_8})
     app = sessions_app(windows, starter=recording_starter(starts))
@@ -2719,7 +2719,7 @@ async def test_S_opens_another_session_for_an_issue_with_runs_and_adds_its_row_a
         await highlight(app, pilot, "6")
         await pilot.press("S")
         await settle(app, pilot)
-        assert app.query_one("#find", Input).display                       # the instructions box (AC3)
+        assert app.query_one("#find", Input).display                       # the instructions box (#85)
         await pilot.press("enter")
         await settle(app, pilot)
         assert starts == [("Munsik-Park/autoflow-sandbox", 6, "")]
@@ -2729,7 +2729,7 @@ async def test_S_opens_another_session_for_an_issue_with_runs_and_adds_its_row_a
 
 
 async def test_S_refuses_what_s_refuses():
-    # AC2: a closed issue, a pull request, a starter's StartError (an unusable gh-token), no coordinator.
+    # A closed issue, a pull request, a starter's StartError (an unusable gh-token), no coordinator (#85).
     starts = []
     issues = [Issue(5, "five", state="closed"), Issue(7, "seven", pull=True), Issue(4, "four")]
     error = StartError("autoflow-sandbox/gh-token: readable by you only: chmod 600")
@@ -2764,12 +2764,12 @@ async def test_S_refuses_what_s_refuses():
 
 @pytest.mark.parametrize("key", ["s", "S"])
 @pytest.mark.parametrize("typed, passed", [
-    ("  focus on  tests  ", "focus on  tests"),     # outer blanks removed, inner ones kept (D3)
+    ("  focus on  tests  ", "focus on  tests"),     # outer blanks removed, inner ones kept (#85)
     ("   ", ""),                                    # blanks only: none, as today
     ("", ""),
 ])
 async def test_s_and_S_ask_for_instructions_and_pass_them_as_typed(key, typed, passed):
-    # AC3: the box opens; Enter passes its text to the starter.
+    # The box opens; Enter passes its text to the starter (#85).
     starts = []
     app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts))
     async with app.run_test(size=WIDE) as pilot:
@@ -2800,7 +2800,7 @@ async def test_esc_in_the_instructions_box_opens_nothing(key):
 
 
 async def test_highlighting_a_session_shows_its_own_run_in_every_pane():
-    # AC4: each row its own label, and its own run's lines, steps and sessions.
+    # Each row its own label, and its own run's lines, steps and sessions (#85).
     app = sessions_app(SessionWindows({}))
     async with app.run_test(size=WIDE) as pilot:
         await settle(app, pilot)
@@ -2819,7 +2819,7 @@ async def test_highlighting_a_session_shows_its_own_run_in_every_pane():
 
 
 async def test_a_session_keeps_its_run_and_step_when_status_py_lists_the_runs_in_another_order():
-    # AC4, F1: X3 lists B first; each row still shows its own run, and the run pane's cursor stays on its step.
+    # X3 lists B first; each row still shows its own run, and the run pane's cursor stays on its step (#85).
     given = [SESSIONS]
     app = sessions_app(SessionWindows({}), runs=lambda: given[0])
     async with app.run_test(size=WIDE) as pilot:
@@ -2838,7 +2838,7 @@ async def test_a_session_keeps_its_run_and_step_when_status_py_lists_the_runs_in
 
 
 async def test_moving_to_another_session_starts_its_run_and_sessions_panes_at_the_top():
-    # AC4, D7: a different run does not keep the previous run's cursor row.
+    # A different run does not keep the previous run's cursor row (#85).
     app = sessions_app(SessionWindows({}))
     async with app.run_test(size=WIDE) as pilot:
         await settle(app, pilot)
@@ -2854,8 +2854,8 @@ async def test_moving_to_another_session_starts_its_run_and_sessions_panes_at_th
 
 
 async def test_enter_on_a_session_row_goes_to_its_coordination_pane():
-    # AC5: the pane opened for it before its run; its run's coordination surface after, the same pane for the
-    # two runs of one pane; a pane that is gone is said on the status line.
+    # The pane opened for it before its run; its run's coordination surface after, the same pane for the
+    # two runs of one pane; a pane that is gone is said on the status line (#85).
     starts, focused = [], []
     fail = []
 
@@ -2889,7 +2889,7 @@ async def test_enter_on_a_session_row_goes_to_its_coordination_pane():
 
 
 async def test_the_windows_of_an_issue_are_closed_each_on_its_own_wait():
-    # AC6, #28: issue 6 is closed and has no run; @2's screen changes later than @1's, so it is closed later.
+    # Issue 6 is closed and has no run; @2's screen changes later than @1's, so it is closed later (#28, #85).
     windows = SessionWindows({6: WINDOWS_6}, {"@2": [f"{n}" for n in range(8)]})
     app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], lookup=lookup_states({6: "closed"}, []),
                        idle=0.3, check=0.05)
@@ -2912,8 +2912,8 @@ async def test_a_failed_close_of_one_window_leaves_the_other_closed():
 
 
 async def test_the_sessions_of_an_issue_are_found_again_after_a_restart_keyed_by_their_panes():
-    # AC6, D1: a new app reads the runs first, then the windows; each run's row keeps its key, and the windows
-    # with no run (issue 4's two) are shown under their issue after the first window read.
+    # A new app reads the runs first, then the windows; each run's row keeps its key, and the windows
+    # with no run (issue 4's two) are shown under their issue after the first window read (#85).
     windows = SessionWindows({6: WINDOWS_6, 4: [Window("@5", "autoflow-sandbox#4", ["%6"]),
                                                 Window("@6", "autoflow-sandbox#4", ["%7"])]})
     app = sessions_app(windows)
@@ -2929,8 +2929,8 @@ async def test_the_sessions_of_an_issue_are_found_again_after_a_restart_keyed_by
 
 
 async def test_the_row_of_an_issue_with_several_sessions_shows_no_single_run():
-    # AC7: empty run and sessions panes, the repository and workspace with no run lines, and the count; an issue
-    # with one session shows its run on its own row, as today.
+    # Empty run and sessions panes, the repository and workspace with no run lines, and the count; an issue
+    # with one session shows its run on its own row, as today (#85).
     app = sessions_app(SessionWindows({}), runs=SESSIONS + RECORDED_RUNS,
                        open_issues=[Issue(6, "six"), Issue(3, "three"), Issue(4, "four")])
     async with app.run_test(size=WIDE) as pilot:
@@ -2949,7 +2949,7 @@ async def test_the_row_of_an_issue_with_several_sessions_shows_no_single_run():
 
 
 async def test_s_on_a_session_row_goes_to_its_pane_and_on_the_parent_row_says_so():
-    # AC8 (a), (c).
+    # On a session row s goes to its pane; on the row of an issue with several sessions it says so (#85).
     starts, focused = [], []
 
     async def focuser(surface):
@@ -2971,7 +2971,7 @@ async def test_s_on_a_session_row_goes_to_its_pane_and_on_the_parent_row_says_so
 
 
 async def test_s_goes_back_to_a_window_found_after_a_restart():
-    # AC8 (b): issue 8's one window was opened before this app started (nothing in its own opens).
+    # Issue 8's one window was opened before this app started (nothing in its own opens) (#85).
     starts, focused = [], []
 
     async def focuser(surface):
@@ -3020,7 +3020,7 @@ class HeldStarter:
 
 
 async def test_s_during_an_open_of_the_issue_opens_no_box_and_starts_nothing():
-    # AC8 (d), D5: the guard is set when the box is submitted, before the starter returns.
+    # The guard is set when the box is submitted, before the starter returns (#85).
     starter = HeldStarter()
     app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")], starter=starter)
     async with app.run_test(size=WIDE) as pilot:
@@ -3081,7 +3081,7 @@ async def test_s_whose_window_read_ends_during_an_S_open_opens_no_box_and_starts
 
 
 async def test_a_second_S_does_not_cancel_an_open_in_progress():
-    # F4, D6: both opens complete and both panes are sessions under the issue.
+    # Both opens complete and both panes are sessions under the issue (#85).
     starter = HeldStarter()
     app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")], starter=starter)
     async with app.run_test(size=WIDE) as pilot:
@@ -3118,7 +3118,7 @@ def every_sessions_app(given, loader_calls=None, **kw):
 
 
 async def test_a_second_run_of_an_issue_unfolds_its_workspace_and_moves_to_its_session():
-    # K7, D9: runs are compared by name, not by the issues that have one.
+    # Runs are compared by name, not by the issues that have one (#85).
     given = [[RUN_A]]
     app = every_sessions_app(given)
     async with app.run_test(size=WIDE) as pilot:
@@ -3136,7 +3136,7 @@ async def test_a_second_run_of_an_issue_unfolds_its_workspace_and_moves_to_its_s
 
 
 async def test_a_run_ending_while_another_of_its_issue_stays_reads_the_issues_again():
-    # K7, D9.
+    # Runs are compared by name, not by the issues that have one (#85).
     given = [[RUN_A, RUN_C]]
     calls = []
 
@@ -3159,8 +3159,8 @@ async def test_a_run_ending_while_another_of_its_issue_stays_reads_the_issues_ag
 
 
 async def test_the_cursor_stays_on_a_new_session_when_its_window_is_found_and_its_run_prepared():
-    # D8 (a): the key is the pane, from the open to the prepared run. Issue 6 has C's session already, so the
-    # new one is the second and has a row of its own (AC1).
+    # The key is the pane, from the open to the prepared run. Issue 6 has C's session already, so the
+    # new one is the second and has a row of its own (#85).
     starts = []
     given = [[RUN_C]]
     windows = SessionWindows({})
@@ -3187,7 +3187,7 @@ async def test_the_cursor_stays_on_a_new_session_when_its_window_is_found_and_it
 
 
 async def test_a_second_run_in_the_shown_sessions_pane_keeps_the_cursor_on_the_run_it_showed():
-    # D8 (b): <pane> becomes <pane>/<run>; the IDE moves the cursor, and it is not taken for a key press.
+    # <pane> becomes <pane>/<run>; the IDE moves the cursor, and it is not taken for a key press (#85).
     given = [[RUN_A, RUN_C]]
     app = sessions_app(SessionWindows({}), runs=lambda: given[0])
     async with app.run_test(size=WIDE) as pilot:
@@ -3205,7 +3205,7 @@ async def test_a_second_run_in_the_shown_sessions_pane_keeps_the_cursor_on_the_r
 
 
 async def test_the_cursor_goes_to_the_issue_when_its_session_is_gone():
-    # D8 (c): the session's window and run are gone; the issue has one session left, shown on its own row.
+    # The session's window and run are gone; the issue has one session left, shown on its own row (#85).
     given = [[RUN_A, RUN_C]]
     windows = SessionWindows({6: WINDOWS_6})
     app = sessions_app(windows, runs=lambda: given[0])
@@ -3242,7 +3242,7 @@ async def test_an_issue_that_gains_a_second_session_moves_the_cursor_to_the_sess
 
 @pytest.mark.parametrize("every", [False, True])
 async def test_every_footer_key_fits_at_124_columns_and_S_is_next_to_s(every):
-    # D6: one repository and every workspace; nothing checks app.py's Footer line otherwise.
+    # One repository and every workspace; nothing checks app.py's Footer line otherwise (#85).
     app = every_app() if every else coordinated_app()
     async with app.run_test(size=(124, 36)) as pilot:
         await settle(app, pilot)
@@ -3611,7 +3611,7 @@ async def test_an_issue_with_runs_whose_state_is_unknown_at_enter_opens_only_whe
 
 async def test_a_window_opened_by_hand_while_the_s_box_is_open_is_found_at_enter_and_gets_no_second_session():
     # A `<workspace>#<issue>` window opened outside the IDE while the box is open, before any window check:
-    # Enter reads the issue's windows again, opens nothing and says the issue has a session (#85, AC8).
+    # Enter reads the issue's windows again, opens nothing and says the issue has a session (#85).
     starts = []
     windows = SessionWindows({})
     app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts))

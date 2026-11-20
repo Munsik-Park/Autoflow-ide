@@ -93,7 +93,7 @@ from autoflow_ide.runs import parse_status
 
 def test_every_window_of_an_issue_with_its_own_panes_in_listed_order():
     # Two windows named autoflow-sandbox#6, the second split by split-window without -b as the coordinator's
-    # tools/terminals/tmux.py splits (tests/fixtures/README.md): both are found, not only the first (#85, AC6).
+    # tools/terminals/tmux.py splits (tests/fixtures/README.md): both are found, not only the first (#85).
     windows = parse_panes((FIXTURES / "tmux-list-panes-sessions.txt").read_text(), "autoflow-sandbox")
     assert windows == {
         6: [Window("@1", "autoflow-sandbox#6", ["%1"]), Window("@2", "autoflow-sandbox#6", ["%2", "%3"])],
@@ -112,7 +112,7 @@ C = "autoflow-sandbox-6-2026-11-20-222000-cccccccc"
 ])
 def test_each_run_is_the_session_of_the_pane_its_coordination_surface_names(status, order):
     # Matched by coordination.surface, not by status.py's order: the two runs of the first window's pane are
-    # two sessions of that pane, in run-name order, then the second window's (#85, AC4, F1).
+    # two sessions of that pane, in run-name order, then the second window's (#85).
     from autoflow_ide.sessions import sessions_of      # imported here: the rest of the file runs without it
     windows = parse_panes((FIXTURES / "tmux-list-panes-sessions.txt").read_text(), "autoflow-sandbox")
     runs = parse_status((FIXTURES / status).read_text())
