@@ -3750,3 +3750,92 @@ async def test_an_issue_the_list_shows_open_but_github_says_closed_at_enter_gets
         await settle(app, pilot)
         assert asked == [4]
         assert starts == [] and not box.display and "#4 is closed" in status(app)
+
+
+class StaleFindWindows(SessionWindows):
+    """SessionWindows whose next listing, once `hold` is set, is taken at once and returned only when the test
+    releases it, as a periodic check that began before a window was opened ends after it (#85)."""
+
+    def __init__(self, windows):
+        super().__init__(windows)
+        self.hold, self.release = False, asyncio.Event()
+
+    async def find(self, workspace):
+        found = await super().find(workspace)
+        if self.hold:
+            self.hold = False
+            await self.release.wait()
+        return found
+
+
+async def test_a_window_check_that_began_before_a_window_opened_and_ends_during_enter_does_not_hide_it():
+    # A periodic window check lists no window of issue 4; a window is opened by hand; Enter in the `s` box finds
+    # it; the older check then ends while Enter reads the runs and shows no window again. The decision is made
+    # from what Enter read, so nothing opens (#85).
+    starts = []
+    windows = StaleFindWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts),
+                       run_refresh_sec=100)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("s")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display
+        windows.hold = True
+        app.check_windows()                          # its listing has no window of issue 4, and is held
+        await wait(pilot, 0.1)
+        windows.open[4] = [Window("@5", "autoflow-sandbox#4", ["%6"])]
+
+        async def read_runs(coordinator):
+            windows.release.set()                    # the older check ends while Enter reads the runs
+            await asyncio.sleep(0.2)
+            return []
+
+        app.run_loader = read_runs
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert ("Munsik-Park/autoflow-sandbox", 4) not in app.windows_found    # the older check ended last
+        assert starts == [] and not box.display
+        assert "#4 has a session: s goes to it, or S for another" in status(app)
+
+
+RUN_4_PANE = Run("autoflow-sandbox-4-2026-11-21-100000-dddddddd", issue="4",
+                 branch="issue-4-2026-11-21-100000-dddddddd", coordination="%7")
+
+
+async def test_a_run_read_that_began_before_a_run_started_and_ends_during_enter_does_not_hide_it():
+    # A periodic read of the runs lists no run of issue 4; a run of it starts; Enter in the `s` box reads it; the
+    # older read then ends while Enter reads where the panes are and shows no run again. The decision is made from
+    # what Enter read, so nothing opens (#85).
+    starts, release = [], asyncio.Event()
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")],
+                       starter=recording_starter(starts), run_refresh_sec=100)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("s")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display
+        reads = []
+
+        async def read_runs(coordinator):
+            reads.append(coordinator)
+            if len(reads) == 1:                      # the periodic read: taken before the run started, held
+                await release.wait()
+                return []
+            return [RUN_4_PANE]
+
+        async def places():
+            release.set()                            # the older read ends while Enter reads the pane places
+            await asyncio.sleep(0.2)
+            return {}
+
+        app.run_loader, app.placer = read_runs, places
+        app.refresh_runs()
+        await wait(pilot, 0.1)
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert len(reads) == 2 and app.runs == []    # the older read ended last
+        assert starts == [] and not box.display
+        assert "#4 already has a run: autoflow-sandbox-4-2026-11-21-100000-dddddddd" in status(app)

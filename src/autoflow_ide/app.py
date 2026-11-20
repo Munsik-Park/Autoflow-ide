@@ -445,15 +445,19 @@ class IdeApp(App):
 
     # The coordination sessions of an issue (#85)
 
-    def issue_runs(self, issue: Issue) -> List[Run]:
-        """The active runs of `issue`; the given run of a given issue."""
+    def issue_runs(self, issue: Issue, runs: Optional[List[Run]] = None) -> List[Run]:
+        """The active runs of `issue` among `runs`, the last read by default; the given run of a given issue."""
         if not self.coordinator:
             return [issue.run] if issue.run else []
-        return [r for r in self.runs if r.issue == str(issue.number) and self.run_repository(r) == issue.repository]
+        return [r for r in (self.runs if runs is None else runs)
+                if r.issue == str(issue.number) and self.run_repository(r) == issue.repository]
 
-    def sessions(self, issue: Issue) -> List[CoordinationSession]:
+    def sessions(self, issue: Issue, windows: Optional[List[Window]] = None,
+                 runs: Optional[List[Run]] = None) -> List[CoordinationSession]:
+        """The sessions of `issue` from `windows` and `runs` when given, else from the last ones read (#85)."""
         key = issue_key(issue)
-        return sessions_of(self.windows_found.get(key, []), self.issue_runs(issue), self.started.get(key, []))
+        return sessions_of(self.windows_found.get(key, []) if windows is None else windows,
+                           self.issue_runs(issue, runs), self.started.get(key, []))
 
     def session_keys(self, issue: Issue, sessions: List[CoordinationSession]) -> List[str]:
         """The row key of each session: its issue's row key and its pane, with its run's name when the pane holds
@@ -720,8 +724,8 @@ class IdeApp(App):
     def refresh_runs(self) -> None:
         self.run_worker(self.load_runs(), group="runs", exclusive=True)
 
-    async def load_runs(self) -> bool:
-        """Read the active runs and show them; whether they could be read."""
+    async def load_runs(self) -> Optional[List[Run]]:
+        """Read the active runs and show them; the runs read, or None when they could not be read (#85)."""
         try:
             runs = await self.run_loader(self.coordinator)
         except RunSourceError as e:
@@ -736,7 +740,7 @@ class IdeApp(App):
             pass  # the app is closing: its widgets are gone
         if runs is not None and (any(r.coordination for r in self.own_runs()) or self.started or self.windows_found):
             await self.load_places()
-        return runs is not None
+        return runs
 
     async def load_places(self) -> None:
         """Where the panes are, for the coordination session of the shown run and the labels of sessions with no
@@ -947,14 +951,15 @@ class IdeApp(App):
         """Read the issue's windows again, so one the periodic check has not found yet is gone back to; open the
         instructions box when the issue still has no session; otherwise go back to its one session with no run, or
         say why not (#85)."""
-        if self.windows_unread(key, await self.read_windows_of(key)):
+        why, windows = await self.read_windows_of(key)
+        if self.windows_unread(key, why):
             return
         # What `s` checked before the read is checked again, as the issue now is: it may have closed, or an S
         # submitted during the read may be opening a session whose pane is not known yet (#85).
         issue = self.find_issue(key)
         if not self.still_startable(key, issue) or self.open_in_progress(key):
             return
-        sessions = self.sessions(issue)
+        sessions = self.sessions(issue, windows)
         if not sessions:
             if not self.box_taken("start", "s"):  # a box opened during the read is left as it is (#85)
                 self.ask_instructions(key, "s")
@@ -1035,10 +1040,14 @@ class IdeApp(App):
         if found.state != "open":
             self.set_message("start", f"{label} is {found.state or 'of unknown state'}")
             return True
+        windows: Optional[List[Window]] = None
+        runs: Optional[List[Run]] = None
         if opener == "s":
-            if self.windows_unread(key, await self.read_windows_of(key)):
+            why, windows = await self.read_windows_of(key)
+            if self.windows_unread(key, why):
                 return True
-            if not await self.load_runs():
+            runs = await self.load_runs()
+            if runs is None:
                 self.set_message("start", f"{label}: nothing opened: the runs could not be read")
                 return True
         # Looked up again after the reads above, which a refresh of the list may have changed meanwhile (#85).
@@ -1050,7 +1059,9 @@ class IdeApp(App):
         if self.opening.get(key, 0) > 1:  # an open started during the reads, besides this one (#85)
             self.set_message("start", f"{label}: opening the coordination session")
             return True
-        sessions = self.sessions(issue)
+        # From the windows and runs read above, not the last ones shown: a periodic read that began before them
+        # can end during the awaits above and show what was there before (#85).
+        sessions = self.sessions(issue, windows, runs)
         if sessions:
             self.say_sessions(key, sessions)
             return True
@@ -1063,33 +1074,34 @@ class IdeApp(App):
         self.set_message("start", f"{self.label(key)}: nothing opened: its windows could not be read: {why}")
         return True
 
-    async def read_windows_of(self, key: IssueKey) -> Optional[str]:
-        """The windows of issue `key`, read now; kept as last found when they cannot be read. Returns None when
-        they were read, NO_WORKSPACE when the coordinator names no workspace for the repository (no window can be
-        opened for it either: the starter, which looks for the workspace again, says why), or else why tmux could
-        not list them (#85)."""
+    async def read_windows_of(self, key: IssueKey) -> Tuple[Optional[str], List[Window]]:
+        """The windows of issue `key`, read now and shown; kept as last found when they cannot be read. Returns
+        why they were not read and the windows: None and the windows read; NO_WORKSPACE when the coordinator names
+        no workspace for the repository (no window can be opened for it either: the starter, which looks for the
+        workspace again, says why), with the windows last found; or else why tmux could not list them (#85)."""
+        last = list(self.windows_found.get(key, []))
         try:
             group = self.group_of(key[0])
             if self.every:
                 if group is None or group.workspace is None:
-                    return NO_WORKSPACE
+                    return NO_WORKSPACE, last
                 workspace = group.workspace.name
             else:
                 if self.workspace is None:
                     self.workspace = await self.workspace_finder(self.coordinator, self.repository)
                 workspace = self.workspace
         except StartError:
-            return NO_WORKSPACE
+            return NO_WORKSPACE, last
         try:
             found = (await self.windows.find(workspace)).get(key[1], [])
         except WindowError as e:
-            return str(e) or "tmux failed"
+            return str(e) or "tmux failed", last
         before = self.sessions_shape()
         self.set_windows(key, found)
         if self.sessions_shape() != before:
             self.render_issues()
             self.show_issue(self.current_in())
-        return None
+        return None, found
 
     def set_windows(self, key: IssueKey, windows: List[Window]) -> None:
         """Make `windows` the found windows of issue `key`. An opened pane found in a window is kept while its
