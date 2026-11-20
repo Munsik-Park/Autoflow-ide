@@ -46,6 +46,8 @@ BaseReader = Callable[[str], Awaitable[Setting]]
 WorkspaceCreator = Callable[[str, str], Awaitable[str]]
 # An issue by its repository (owner/name) and number: numbers alone repeat across repositories.
 IssueKey = Tuple[str, int]
+# What read_windows_of returns when the coordinator names no workspace for the issue's repository (#85).
+NO_WORKSPACE = "no workspace"
 RUN_REFRESH_SEC = 5.0
 # The open issues are also read again on this interval, so an issue a merge closed leaves the list without a
 # key press (about 60 gh calls an hour), and when a step changes (see show_runs).
@@ -718,7 +720,8 @@ class IdeApp(App):
     def refresh_runs(self) -> None:
         self.run_worker(self.load_runs(), group="runs", exclusive=True)
 
-    async def load_runs(self) -> None:
+    async def load_runs(self) -> bool:
+        """Read the active runs and show them; whether they could be read."""
         try:
             runs = await self.run_loader(self.coordinator)
         except RunSourceError as e:
@@ -733,6 +736,7 @@ class IdeApp(App):
             pass  # the app is closing: its widgets are gone
         if runs is not None and (any(r.coordination for r in self.own_runs()) or self.started or self.windows_found):
             await self.load_places()
+        return runs is not None
 
     async def load_places(self) -> None:
         """Where the panes are, for the coordination session of the shown run and the labels of sessions with no
@@ -943,7 +947,8 @@ class IdeApp(App):
         """Read the issue's windows again, so one the periodic check has not found yet is gone back to; open the
         instructions box when the issue still has no session; otherwise go back to its one session with no run, or
         say why not (#85)."""
-        await self.read_windows_of(key)
+        if self.windows_unread(key, await self.read_windows_of(key)):
+            return
         # What `s` checked before the read is checked again, as the issue now is: it may have closed, or an S
         # submitted during the read may be opening a session whose pane is not known yet (#85).
         issue = self.find_issue(key)
@@ -982,15 +987,68 @@ class IdeApp(App):
         else:
             self.set_message("start", f"{self.label(key)} has a session: s goes to it, or S for another")
 
-    def refuses_to_open(self, key: IssueKey, opener: Optional[str]) -> bool:
-        """Whether, from the state at this moment, the checks `opener` (s or S) made before it opened the
-        instructions box now refuse a session of issue `key`; says why (#85)."""
+    def decide_open(self, key: IssueKey, opener: Optional[str], text: str) -> None:
+        """Enter in the instructions box of issue `key`, opened by `opener` (s or S): open its coordination session
+        only when the state read now permits it. What can be told at once is checked here; the rest is read again
+        in a worker, with the open marked as in progress from now on, so no other start comes between those reads
+        and the open (#85)."""
+        issue = self.find_issue(key)
+        if not self.still_startable(key, issue) or (opener == "s" and self.open_in_progress(key)):
+            return
+        self.opening[key] = self.opening.get(key, 0) + 1
+        self.set_message("start", f"{self.label(key)}: checking before opening the coordination session")
+        self.run_worker(self.open_if_still_startable(key, opener, text), group=f"start-{key[0]}-{key[1]}")
+
+    async def open_if_still_startable(self, key: IssueKey, opener: Optional[str], text: str) -> None:
+        """Open the session decide_open marked as in progress, unless the state read now refuses it; the mark is
+        dropped when nothing opens, and by start once the starter returns (#85)."""
+        opens = False
+        try:
+            opens = not await self.refuses_at_enter(key, opener)
+        finally:
+            if not opens:
+                self.end_open(key)
+        if opens:
+            await self.start(key, text)
+
+    async def refuses_at_enter(self, key: IssueKey, opener: Optional[str]) -> bool:
+        """Whether a session of issue `key` is refused, from its state read now; says why. It opens only when each
+        input is known to permit it: the issue listed, open (read from GitHub when the list does not show it open)
+        and not a pull request; for `s`, also its windows and the runs read again, no other open in progress and
+        no session. One that cannot be read refuses (#85)."""
+        label = self.label(key)
+        issue = self.find_issue(key)
+        if not self.still_startable(key, issue):
+            return True
+        if issue.state != "open":
+            try:
+                found = await self.lookup(*key)
+            except IssueSourceError as e:
+                self.set_message("start", f"{label}: nothing opened: its state could not be read: {e}")
+                return True
+            if key in self.lookups:
+                self.lookups[key] = found
+                self.show_issues()
+            if found.pull:
+                self.set_message("start", f"{label} is a pull request")
+                return True
+            if found.state != "open":
+                self.set_message("start", f"{label} is {found.state or 'of unknown state'}")
+                return True
+        if opener == "s":
+            if self.windows_unread(key, await self.read_windows_of(key)):
+                return True
+            if not await self.load_runs():
+                self.set_message("start", f"{label}: nothing opened: the runs could not be read")
+                return True
+        # Looked up again after the reads above, which a refresh of the list may have changed meanwhile (#85).
         issue = self.find_issue(key)
         if not self.still_startable(key, issue):
             return True
         if opener != "s":
             return False
-        if self.open_in_progress(key):
+        if self.opening.get(key, 0) > 1:  # an open started during the reads, besides this one (#85)
+            self.set_message("start", f"{label}: opening the coordination session")
             return True
         sessions = self.sessions(issue)
         if sessions:
@@ -998,26 +1056,40 @@ class IdeApp(App):
             return True
         return False
 
-    async def read_windows_of(self, key: IssueKey) -> None:
-        """The windows of issue `key`, read now; kept as last found when they cannot be read."""
+    def windows_unread(self, key: IssueKey, why: Optional[str]) -> bool:
+        """Whether the read of issue `key`'s windows failed, with `why`; says so (#85)."""
+        if why is None or why == NO_WORKSPACE:
+            return False
+        self.set_message("start", f"{self.label(key)}: nothing opened: its windows could not be read: {why}")
+        return True
+
+    async def read_windows_of(self, key: IssueKey) -> Optional[str]:
+        """The windows of issue `key`, read now; kept as last found when they cannot be read. Returns None when
+        they were read, NO_WORKSPACE when the coordinator names no workspace for the repository (no window can be
+        opened for it either: the starter, which looks for the workspace again, says why), or else why tmux could
+        not list them (#85)."""
         try:
             group = self.group_of(key[0])
             if self.every:
                 if group is None or group.workspace is None:
-                    return
+                    return NO_WORKSPACE
                 workspace = group.workspace.name
             else:
                 if self.workspace is None:
                     self.workspace = await self.workspace_finder(self.coordinator, self.repository)
                 workspace = self.workspace
+        except StartError:
+            return NO_WORKSPACE
+        try:
             found = (await self.windows.find(workspace)).get(key[1], [])
-        except (StartError, WindowError):
-            return
+        except WindowError as e:
+            return str(e) or "tmux failed"
         before = self.sessions_shape()
         self.set_windows(key, found)
         if self.sessions_shape() != before:
             self.render_issues()
             self.show_issue(self.current_in())
+        return None
 
     def set_windows(self, key: IssueKey, windows: List[Window]) -> None:
         """Make `windows` the found windows of issue `key`. An opened pane found in a window is kept while its
@@ -1050,13 +1122,15 @@ class IdeApp(App):
         box.display = True
         box.focus()
 
-    def open_session(self, key: IssueKey, text: str) -> None:
-        """Open a coordination session with the instructions given. Marked as in progress before the starter is
-        awaited, so `s` meanwhile opens no second one; an open is not cancelled by a later one."""
-        self.opening[key] = self.opening.get(key, 0) + 1
-        self.run_worker(self.start(key, text), group=f"start-{key[0]}-{key[1]}")
+    def end_open(self, key: IssueKey) -> None:
+        """One open of issue `key` is no longer in progress."""
+        self.opening[key] = self.opening.get(key, 1) - 1
+        if not self.opening[key]:
+            del self.opening[key]
 
     async def start(self, key: IssueKey, text: str = "") -> None:
+        """Open a coordination session with the instructions given; decide_open marked it as in progress, so `s`
+        meanwhile opens no second one, and an open is not cancelled by a later one."""
         self.set_message("start", f"{self.label(key)}: opening the coordination session")
         try:
             pane = await self.starter(self.coordinator, *key, text)
@@ -1064,9 +1138,7 @@ class IdeApp(App):
             self.set_message("start", f"start {self.label(key)}: {e}")
             return
         finally:
-            self.opening[key] = self.opening.get(key, 1) - 1
-            if not self.opening[key]:
-                del self.opening[key]
+            self.end_open(key)
         self.started[key] = self.started.get(key, []) + [pane]
         self.set_message("start", f"{self.label(key)}: coordination session in {pane}")
         group = self.group_of(key[0])
@@ -1377,11 +1449,10 @@ class IdeApp(App):
         if event.input.id == "find" and self.instructing is not None:
             # Whitespace as a plain space, other control and non-printable characters dropped, outer blanks removed,
             # the rest as typed; none, or only blanks, starts it as before. The issue may have closed, or gained a
-            # session, while the box was open: what its opener checked is checked again (#85).
+            # session, while the box was open: the open is decided from its state read now (#85).
             key, opener, text = self.instructing, self.instructed_by, printable(event.value).strip()
             self.end_find()
-            if not self.refuses_to_open(key, opener):
-                self.open_session(key, text)
+            self.decide_open(key, opener, text)
             return
         if event.input.id == "find" and self.adding:
             text = event.value.strip()

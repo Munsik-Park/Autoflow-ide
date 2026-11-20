@@ -3545,3 +3545,177 @@ async def test_s_on_a_session_row_of_a_closed_issue_goes_to_the_session():
         await pilot.press("s")
         await settle(app, pilot)
         assert focused == ["%2"] and "#6 is closed" in status(app)
+
+
+# The open decided at Enter from the state read then, failing closed (#85)
+
+class HeldLookup:
+    """A lookup of the issue's state whose reads wait until the test releases them, then give `answer`: a state,
+    "pull" for a pull request, or an IssueSourceError raised (#85)."""
+
+    def __init__(self, answer):
+        self.answer, self.asked, self.release = answer, [], asyncio.Event()
+
+    async def __call__(self, repository, number):
+        self.asked.append(number)
+        await self.release.wait()
+        if isinstance(self.answer, IssueSourceError):
+            raise self.answer
+        if self.answer == "pull":
+            return Issue(number, f"issue {number}", state="open", pull=True)
+        return Issue(number, f"issue {number}", state=self.answer)
+
+
+@pytest.mark.parametrize("answer, said", [
+    ("closed", "#6 is closed"),
+    ("pull", "#6 is a pull request"),
+    (IssueSourceError("HTTP 502"), "#6: nothing opened: its state could not be read: HTTP 502"),
+    ("open", None),
+])
+async def test_an_issue_with_runs_whose_state_is_unknown_at_enter_opens_only_when_github_says_it_is_open(answer, said):
+    # Issue 6 has runs and leaves the open list while its S box is open; its row's state is unknown while it is
+    # looked up. Enter reads the state from GitHub before deciding, and opens only an issue it finds open (#85).
+    starts, listed, lookup = [], [[Issue(6, "six"), Issue(4, "four")]], HeldLookup(answer)
+    app = sessions_app(SessionWindows({}), open_issues=closing_list(listed), lookup=lookup,
+                       starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await highlight(app, pilot, "6")
+        await pilot.press("S")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display and box.border_title == "Instructions for #6"
+        listed[0] = [Issue(4, "four")]
+        app.action_refresh_issues()
+        await wait(pilot, 0.2)
+        assert app.find_issue(("Munsik-Park/autoflow-sandbox", 6)).state is None    # looked up, held
+        await pilot.press("enter")
+        await wait(pilot, 0.2)
+        assert starts == [] and not box.display
+        lookup.release.set()
+        await settle(app, pilot)
+        if said is None:
+            assert starts == [("Munsik-Park/autoflow-sandbox", 6, "")]
+        else:
+            assert starts == [] and said in status(app)
+
+
+async def test_a_window_opened_by_hand_while_the_s_box_is_open_is_found_at_enter_and_gets_no_second_session():
+    # A `<workspace>#<issue>` window opened outside the IDE while the box is open, before any window check:
+    # Enter reads the issue's windows again, opens nothing and says the issue has a session (#85, AC8).
+    starts = []
+    windows = SessionWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("s")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display
+        windows.open[4] = [Window("@5", "autoflow-sandbox#4", ["%6"])]   # no check runs (check=100)
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [] and not box.display
+        assert "#4 has a session: s goes to it, or S for another" in status(app)
+
+
+class FailingWindows(SessionWindows):
+    """SessionWindows whose listing fails once `fail` is set, as tmux does with no server (#85)."""
+
+    def __init__(self, windows):
+        super().__init__(windows)
+        self.fail = False
+
+    async def find(self, workspace):
+        if self.fail:
+            raise WindowError("no server running on /tmp/tmux-501/default")
+        return await super().find(workspace)
+
+
+async def test_s_opens_nothing_when_the_windows_cannot_be_read_before_the_box_or_at_enter():
+    # The issue's windows are what tells `s` it has no session; when tmux cannot list them, `s` opens neither the
+    # box nor, at Enter, a session, and the status line says why (#85).
+    starts = []
+    windows = FailingWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        windows.fail = True
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert not box.display
+        assert "#4: nothing opened: its windows could not be read: no server running" in status(app)
+        windows.fail = False
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert box.display
+        windows.fail = True
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [] and not box.display
+        assert "#4: nothing opened: its windows could not be read: no server running" in status(app)
+
+
+RUN_4 = Run("autoflow-sandbox-4-2026-11-21-100000-dddddddd", issue="4", branch="issue-4-2026-11-21-100000-dddddddd")
+
+
+@pytest.mark.parametrize("then, said", [
+    ([RUN_4], "#4 already has a run: autoflow-sandbox-4-2026-11-21-100000-dddddddd"),
+    (RunSourceError("status.py exited with status 1"), "#4: nothing opened: the runs could not be read"),
+])
+async def test_s_at_enter_reads_the_runs_again_and_opens_nothing_for_a_run_or_runs_it_cannot_read(then, said):
+    # A run of issue 4 listed by status.py since the last read, or a read that fails: Enter in the `s` box opens
+    # nothing and says why (#85).
+    starts, runs = [], [[]]
+
+    def read_runs():
+        if isinstance(runs[0], Exception):
+            raise runs[0]
+        return list(runs[0])
+
+    app = sessions_app(SessionWindows({}), runs=read_runs, open_issues=[Issue(4, "four")],
+                       starter=recording_starter(starts), run_refresh_sec=100)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("s")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display
+        runs[0] = then
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [] and not box.display and said in status(app)
+
+
+async def test_an_open_started_during_the_enter_reads_of_s_keeps_s_from_opening_a_second_session():
+    # Enter in the `s` box marks the open as in progress before it reads the windows again: `s` meanwhile opens no
+    # box, and an S open submitted meanwhile makes the `s` open nothing when its reads return (#85).
+    starter, windows = HeldStarter(), HeldFindWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], starter=starter)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("s")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        box.value = "by s"
+        windows.hold = True
+        await pilot.press("enter")                   # its reads wait on the window listing
+        await wait(pilot, 0.1)
+        assert app.opening and not box.display
+        await pilot.press("s")
+        await wait(pilot, 0.1)
+        assert not box.display and "#4: opening the coordination session" in status(app)
+        await pilot.press("S")
+        await wait(pilot, 0.1)
+        box.value = "by S"
+        await pilot.press("enter")                   # the S open: its starter is held
+        await wait(pilot, 0.1)
+        assert starter.calls == [("Munsik-Park/autoflow-sandbox", 4, "by S")]
+        windows.release.set()                        # the reads of the `s` Enter return during the S open
+        await wait(pilot, 0.2)
+        assert "#4: opening the coordination session" in status(app)
+        starter.release.set()
+        await settle(app, pilot)
+        assert starter.calls == [("Munsik-Park/autoflow-sandbox", 4, "by S")]
+        assert list(app.started.values()) == [["%9"]] and not app.opening
