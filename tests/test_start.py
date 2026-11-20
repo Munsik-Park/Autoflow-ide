@@ -301,3 +301,76 @@ async def test_start_run_opens_nothing_with_a_gh_token_it_cannot_use(tmp_path, m
         await start_run(clone, "Munsik-Park/autoflow-sandbox", 4)
     assert "github_pat_abc" not in str(e.value)
     assert not log.exists()
+
+
+# Instructions given at start (#85): typed as one word of the first prompt, as the operator gave them.
+
+import shlex
+
+
+def fake_tmux_args(tmp_path, monkeypatch):
+    """A tmux on PATH that records each argument byte for byte (NUL after each, RS after each call), so a text
+    holding a backslash is compared as typed (#85); `echo "$@"` under /bin/sh rewrites backslash sequences."""
+    log = tmp_path / "args"
+    script = (f'#!/bin/sh\nprintf \'%s\\0\' "$@" >> "{log}"\nprintf \'\\036\' >> "{log}"\n'
+              'if [ "$1" = new-window ]; then echo %7; fi\n')
+    tmux = tmp_path / "tmux"
+    tmux.write_text(script)
+    tmux.chmod(tmux.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("TMUX", "/tmp/tmux-test,1,0")
+    return log
+
+
+def typed_line(log):
+    """The line typed by `send-keys -t %7 -l -- <line>`, as tmux received it."""
+    calls = [c.split(b"\0")[:-1] for c in log.read_bytes().split(b"\x1e")[:-1]]
+    [line] = [c[5] for c in calls if c[:5] == [b"send-keys", b"-t", b"%7", b"-l", b"--"]]
+    return line.decode()
+
+
+INSTRUCTIONS = [
+    "focus on the tests first",
+    "don't touch the README",                   # '
+    'say "why" in the report',                  # "
+    "keep $HOME and ${PATH} as they are",       # $
+    "run `date` after it",                      # backticks
+    r"a path C:\work\new and a \n",             # \
+    "no rush!",                                 # !
+    "focus on  tests   here",                   # a run of inner blanks
+]
+
+
+@pytest.mark.parametrize("text", INSTRUCTIONS)
+async def test_start_run_types_the_instructions_as_one_word_of_the_first_prompt(tmp_path, monkeypatch, text):
+    # A POSIX shell splits the typed line into exactly `claude` and the prompt: the instructions are neither
+    # split nor expanded (#85, AC3).
+    base = tmp_path / "base"
+    workspace(base, "autoflow-sandbox", "Munsik-Park/autoflow-sandbox")
+    clone = coordinator_clone(tmp_path, base)
+    log = fake_tmux_args(tmp_path, monkeypatch)
+    assert await start_run(clone, "Munsik-Park/autoflow-sandbox", 4, text) == "%7"
+    assert shlex.split(typed_line(log)) == ["claude", "Workspace autoflow-sandbox, issue #4. " + text]
+
+
+@pytest.mark.parametrize("text", INSTRUCTIONS)
+async def test_start_run_types_the_instructions_after_the_token(tmp_path, monkeypatch, text):
+    base = tmp_path / "base"
+    workspace(base, "autoflow-sandbox", "Munsik-Park/autoflow-sandbox")
+    token(base / "autoflow-sandbox", "github_pat_abc\n")
+    clone = coordinator_clone(tmp_path, base)
+    log = fake_tmux_args(tmp_path, monkeypatch)
+    await start_run(clone, "Munsik-Park/autoflow-sandbox", 4, text)
+    words = shlex.split(typed_line(log))
+    assert words[0].startswith("GH_TOKEN=$(cat")
+    assert words[-2:] == ["claude", "Workspace autoflow-sandbox, issue #4. " + text]
+    assert "github_pat_abc" not in log.read_text()
+
+
+async def test_start_run_with_no_instructions_types_todays_line(tmp_path, monkeypatch):
+    base = tmp_path / "base"
+    workspace(base, "autoflow-sandbox", "Munsik-Park/autoflow-sandbox")
+    clone = coordinator_clone(tmp_path, base)
+    log = fake_tmux_args(tmp_path, monkeypatch)
+    await start_run(clone, "Munsik-Park/autoflow-sandbox", 4, "")
+    assert typed_line(log) == "claude 'Workspace autoflow-sandbox, issue #4.'"
