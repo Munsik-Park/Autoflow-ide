@@ -2645,6 +2645,12 @@ async def highlight(app, pilot, key):
     await settle(app, pilot)
 
 
+async def highlight_now(app, pilot, key):
+    """As highlight, without waiting on a held worker (#85)."""
+    issues_table(app).move_cursor(row=keys(issues_table(app)).index(key))
+    await wait(pilot, 0.1)
+
+
 async def runs_by_row(app, pilot, key):
     """The run each row under issue row `key` shows when highlighted, in row order."""
     shown = []
@@ -3040,8 +3046,8 @@ class HeldFindWindows(SessionWindows):
 
 
 async def test_s_whose_window_read_ends_during_an_S_open_opens_no_box_and_starts_nothing():
-    # review-1 R1: `s` reads the windows again before it decides; an S submitted during that read is opening a
-    # session whose pane is not known yet, so when the read returns `s` opens no box and no second session (#85).
+    # `s` reads the windows again before it decides; an S submitted during that read is opening a session whose
+    # pane is not known yet, so when the read returns `s` opens no box and no second session (#85).
     starter, windows = HeldStarter(), HeldFindWindows({})
     app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], starter=starter)
     async with app.run_test(size=WIDE) as pilot:
@@ -3285,10 +3291,10 @@ async def test_the_step_detail_and_its_cause_are_those_of_the_highlighted_sessio
             await pilot.press("1")
 
 
-# Fixes after audit-1 and quality-1 (#85)
+# The instructions box: what reaches it and what it passes (#85)
 
 async def test_the_instructions_box_passes_no_control_characters():
-    # audit-1 F1: a paste keeps the control characters of its first line; they are dropped, then the blanks.
+    # A paste keeps the control characters of its first line; they are dropped, then the blanks (#85).
     starts = []
     app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts))
     async with app.run_test(size=WIDE) as pilot:
@@ -3301,8 +3307,9 @@ async def test_the_instructions_box_passes_no_control_characters():
         assert starts == [("Munsik-Park/autoflow-sandbox", 4, "touch x [2J#")]
 
 
-async def test_hash_after_an_unsubmitted_instructions_box_finds_and_opens_nothing():
-    # quality-1 Q1: `#` reopens the box for a find; its Enter finds the number and starts no session.
+async def test_hash_while_an_instructions_box_is_open_leaves_that_box_and_its_enter_to_its_issue():
+    # The box is bound to the purpose and the issue its opener set: `#` with the focus off the box opens no find
+    # and says why; the box keeps its title and text, and its Enter starts the session it was opened for (#85).
     starts, asked = [], []
 
     async def lookup(repository, number):
@@ -3315,15 +3322,21 @@ async def test_hash_after_an_unsubmitted_instructions_box_finds_and_opens_nothin
         await settle(app, pilot)
         await pilot.press("S")
         await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        box.value = "tests first"
         await pilot.press("tab")                                    # focus leaves the box, which stays shown
-        await pilot.press("number_sign", "1", "2", "enter")
+        await pilot.press("number_sign")
         await settle(app, pilot)
-        assert starts == [] and 12 in asked
-        assert cursor_key(app) == "12"
+        assert "find: the box is open for the instructions of #4" in status(app)
+        assert box.display and box.border_title == "Instructions for #4" and box.value == "tests first"
+        box.focus()
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [("Munsik-Park/autoflow-sandbox", 4, "tests first")] and asked == []
 
 
-async def test_w_after_an_unsubmitted_instructions_box_adds_the_workspace_and_opens_no_session():
-    # quality-1 Q1, with `w`.
+async def test_w_while_an_instructions_box_is_open_leaves_that_box_and_its_enter_to_its_issue():
+    # As with `#`, for `w` (#85).
     starts, created = [], []
 
     async def creator(coordinator, address):
@@ -3336,17 +3349,183 @@ async def test_w_after_an_unsubmitted_instructions_box_adds_the_workspace_and_op
         await settle(app, pilot)
         await pilot.press("S")
         await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        box.value = "tests first"
         await pilot.press("tab", "w")
         await settle(app, pilot)
-        app.query_one("#find", Input).value = "Munsik-Park/other"
+        assert "add workspace: the box is open for the instructions of #4" in status(app)
+        assert box.border_title == "Instructions for #4" and box.value == "tests first"
+        box.focus()
         await pilot.press("enter")
         await settle(app, pilot)
-        assert starts == [] and created == ["Munsik-Park/other"]
+        assert starts == [("Munsik-Park/autoflow-sandbox", 4, "tests first")] and created == []
+
+
+@pytest.mark.parametrize("opener", ["number_sign", "w"])
+async def test_S_while_a_find_or_workspace_box_is_open_leaves_that_box_alone(opener):
+    # The other way round: S opens no instructions box over a find's or a new workspace's (#85).
+    starts, created = [], []
+
+    async def creator(coordinator, address):
+        created.append(address)
+        return "%20"
+
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")],
+                       starter=recording_starter(starts), workspace_creator=creator)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press(opener)
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        title, placeholder = box.border_title, box.placeholder
+        box.value = "4" if opener == "number_sign" else "Munsik-Park/other"
+        await pilot.press("tab", "S")
+        await settle(app, pilot)
+        assert "S: the box is open for" in status(app)
+        assert (box.border_title, box.placeholder) == (title, placeholder) and app.instructing is None
+        box.focus()
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == []
+        assert created == ([] if opener == "number_sign" else ["Munsik-Park/other"])
+
+
+def closing_list(issues):
+    """The open issues as a function of the list read: `issues[0]` at each read, which a test changes."""
+    return lambda: list(issues[0])
+
+
+@pytest.mark.parametrize("key", ["s", "S"])
+async def test_an_issue_that_leaves_the_open_list_while_its_box_is_open_gets_no_session(key):
+    # The issue closes while the instructions are typed and the next read of the list drops it: on Enter the
+    # checks of s and S are made again, nothing opens, the box closes and the status line says why (#85).
+    starts, listed = [], [[Issue(4, "four"), Issue(8, "eight")]]
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=closing_list(listed), starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press(key)
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display and box.border_title == "Instructions for #4"
+        box.value = "go"
+        listed[0] = [Issue(8, "eight")]
+        app.action_refresh_issues()
+        await settle(app, pilot)
+        assert box.display and box.value == "go"                   # the read leaves the box as it is
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [] and not box.display
+        assert "#4 is no longer listed" in status(app)
+
+
+async def test_an_issue_with_runs_that_closes_while_its_S_box_is_open_gets_no_session():
+    # Issue 6 has runs, so its row stays when it leaves the open list, marked closed: Enter in its S box says it is
+    # closed and opens nothing (#85).
+    starts, listed = [], [[Issue(6, "six"), Issue(4, "four")]]
+    app = sessions_app(SessionWindows({}), open_issues=closing_list(listed), lookup=lookup_states({6: "closed"}, []),
+                       starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await highlight(app, pilot, "6")
+        await pilot.press("S")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display and box.border_title == "Instructions for #6"
+        listed[0] = [Issue(4, "four")]
+        app.action_refresh_issues()
+        await settle(app, pilot)
+        await settle(app, pilot)                                    # the closed row's lookup
+        assert app.find_issue(("Munsik-Park/autoflow-sandbox", 6)).closed
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [] and not box.display and "#6 is closed" in status(app)
+
+
+async def test_a_window_found_while_the_s_box_is_open_is_gone_back_to_by_s_not_doubled_by_enter():
+    # `s` opens a box only for an issue with no session; one found while the box is open (a window opened from
+    # elsewhere) makes Enter open nothing and say so, as `s` would (#85).
+    starts = []
+    windows = SessionWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("s")
+        await settle(app, pilot)
+        windows.open[4] = [Window("@5", "autoflow-sandbox#4", ["%6"])]
+        await check(app, pilot)
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [] and not app.query_one("#find", Input).display
+        assert "#4 has a session: s goes to it, or S for another" in status(app)
+
+
+async def test_S_during_the_window_read_of_s_keeps_its_box_for_its_own_issue():
+    # `s` on issue 4 waits on its window read; S on issue 8 opens the box meanwhile and text is typed. When the
+    # read returns, `s` leaves that box alone, and its Enter starts issue 8's session, not 4's (#85).
+    starter, windows = HeldStarter(), HeldFindWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four"), Issue(8, "eight")], starter=starter)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        windows.hold = True
+        await pilot.press("s")                                     # issue 4; its worker waits on the read
+        await wait(pilot, 0.1)
+        await highlight_now(app, pilot, "8")
+        await pilot.press("S")
+        await wait(pilot, 0.1)
+        box = app.query_one("#find", Input)
+        box.value = "for eight"
+        windows.release.set()
+        await wait(pilot, 0.2)
+        assert box.display and box.border_title == "Instructions for #8" and box.value == "for eight"
+        assert "s: the box is open for the instructions of #8" in status(app)
+        await pilot.press("enter")
+        await wait(pilot, 0.1)
+        starter.release.set()
+        await settle(app, pilot)
+        assert starter.calls == [("Munsik-Park/autoflow-sandbox", 8, "for eight")]
+
+
+@pytest.mark.parametrize("opener", ["number_sign", "w"])
+async def test_a_find_or_workspace_box_opened_during_the_window_read_of_s_is_left_to_its_opener(opener):
+    # `#` or `w` during the read of `s`: when the read returns, the box keeps its purpose and text, and its Enter
+    # finds or adds, starting no session (#85).
+    starts, created, asked = [], [], []
+
+    async def creator(coordinator, address):
+        created.append(address)
+        return "%20"
+
+    async def lookup(repository, number):
+        asked.append(number)
+        return Issue(number, "an old one", state="closed")
+
+    windows = HeldFindWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], lookup=lookup,
+                       starter=recording_starter(starts), workspace_creator=creator)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        windows.hold = True
+        await pilot.press("s")
+        await wait(pilot, 0.1)
+        await pilot.press(opener)
+        await wait(pilot, 0.1)
+        box = app.query_one("#find", Input)
+        title, placeholder = box.border_title, box.placeholder
+        typed = "12" if opener == "number_sign" else "Munsik-Park/other"
+        box.value = typed
+        windows.release.set()
+        await wait(pilot, 0.2)
+        assert box.display and (box.border_title, box.placeholder, box.value) == (title, placeholder, typed)
+        assert app.instructing is None
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == []
+        assert (asked, created) == (([12], []) if opener == "number_sign" else ([], ["Munsik-Park/other"]))
 
 
 async def test_s_on_a_session_row_of_a_closed_issue_goes_to_the_session():
-    # quality-1 Q2: issue 6 left the open list closed and still has its runs; `s` on a session's row goes there,
-    # as Enter does, and on the issue's row it still says the issue is closed.
+    # Issue 6 left the open list closed and still has its runs; `s` on a session's row goes there, as Enter does,
+    # and on the issue's row it still says the issue is closed (#85).
     starts, focused = [], []
 
     async def focuser(surface):

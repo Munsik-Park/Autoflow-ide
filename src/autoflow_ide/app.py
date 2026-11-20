@@ -216,6 +216,7 @@ class IdeApp(App):
         self.opening: Dict[IssueKey, int] = {}
         # The issue the box is open for, to take the instructions of a new coordination session (#85).
         self.instructing: Optional[IssueKey] = None
+        self.instructed_by: Optional[str] = None  # the key, s or S, that opened the box for instructing (#85)
         self.run_refresh_sec = run_refresh_sec
         self.issue_refresh_sec = issue_refresh_sec
         self.runs: List[Run] = []
@@ -935,28 +936,67 @@ class IdeApp(App):
     def action_new_session(self) -> None:
         """`S`: open another coordination session for the issue, whatever sessions or runs it has (#85)."""
         issue = self.current
-        if issue is not None and self.can_start(issue):
-            self.ask_instructions(issue_key(issue))
+        if issue is not None and not self.box_taken("start", "S") and self.can_start(issue):
+            self.ask_instructions(issue_key(issue), "S")
 
     async def start_or_go_back(self, key: IssueKey) -> None:
         """Read the issue's windows again, so one the periodic check has not found yet is gone back to; open the
         instructions box when the issue still has no session; otherwise go back to its one session with no run, or
         say why not (#85)."""
         await self.read_windows_of(key)
-        if self.opening.get(key):
-            # An S submitted during the read is opening a session whose pane is not known yet (#85).
-            self.set_message("start", f"{self.label(key)}: opening the coordination session")
-            return
+        # What `s` checked before the read is checked again, as the issue now is: it may have closed, or an S
+        # submitted during the read may be opening a session whose pane is not known yet (#85).
         issue = self.find_issue(key)
-        sessions = self.sessions(issue) if issue else []
+        if not self.still_startable(key, issue) or self.open_in_progress(key):
+            return
+        sessions = self.sessions(issue)
         if not sessions:
-            self.ask_instructions(key)
-        elif len(sessions) > 1:
+            if not self.box_taken("start", "s"):  # a box opened during the read is left as it is (#85)
+                self.ask_instructions(key, "s")
+        elif len(sessions) == 1 and not sessions[0].run:
+            await self.go_back(key, sessions[0])
+        else:
+            self.say_sessions(key, sessions)
+
+    def still_startable(self, key: IssueKey, issue: Optional[Issue]) -> bool:
+        """Whether issue `key`, as it is listed now, can still have a coordination session opened; says why not
+        (#85)."""
+        if issue is None:
+            self.set_message("start", f"{self.label(key)} is no longer listed")
+            return False
+        return self.can_start(issue)
+
+    def open_in_progress(self, key: IssueKey) -> bool:
+        """Whether a coordination session of issue `key` is being opened; says so (#85)."""
+        if self.opening.get(key):
+            self.set_message("start", f"{self.label(key)}: opening the coordination session")
+            return True
+        return False
+
+    def say_sessions(self, key: IssueKey, sessions: List[CoordinationSession]) -> None:
+        """Say why `s` opens no session for issue `key`, which has `sessions` (#85)."""
+        if len(sessions) > 1:
             self.set_message("start", f"{self.label(key)} has {len(sessions)} sessions: highlight one, or S for another")
         elif sessions[0].run:
             self.set_message("start", f"{self.label(key)} already has a run: {sessions[0].run.name}")
         else:
-            await self.go_back(key, sessions[0])
+            self.set_message("start", f"{self.label(key)} has a session: s goes to it, or S for another")
+
+    def refuses_to_open(self, key: IssueKey, opener: Optional[str]) -> bool:
+        """Whether, from the state at this moment, the checks `opener` (s or S) made before it opened the
+        instructions box now refuse a session of issue `key`; says why (#85)."""
+        issue = self.find_issue(key)
+        if not self.still_startable(key, issue):
+            return True
+        if opener != "s":
+            return False
+        if self.open_in_progress(key):
+            return True
+        sessions = self.sessions(issue)
+        if sessions:
+            self.say_sessions(key, sessions)
+            return True
+        return False
 
     async def read_windows_of(self, key: IssueKey) -> None:
         """The windows of issue `key`, read now; kept as last found when they cannot be read."""
@@ -997,9 +1037,11 @@ class IdeApp(App):
             kept.append(pane)
         self.set_opened(key, kept)
 
-    def ask_instructions(self, key: IssueKey) -> None:
-        """Open the box for the instructions of a new coordination session of issue `key` (#85)."""
+    def ask_instructions(self, key: IssueKey, opener: str) -> None:
+        """Open the box for the instructions of a new coordination session of issue `key`, asked by `opener`, the
+        key s or S; the caller has checked that the box is not open for another action (#85)."""
         self.box_for(instructing=key)
+        self.instructed_by = opener
         box = self.query_one("#find", Input)
         box.border_title = f"Instructions for {self.label(key)}"
         box.placeholder = "focus or approach; Enter to start, Esc to cancel"
@@ -1067,6 +1109,8 @@ class IdeApp(App):
     def action_add_workspace(self) -> None:
         if self.static or not self.coordinator:
             self.set_message("workspace", "add workspace: needs --coordinator")
+            return
+        if self.box_taken("workspace", "add workspace"):
             return
         self.box_for(adding=True)
         box = self.query_one("#find", Input)
@@ -1281,6 +1325,8 @@ class IdeApp(App):
         if self.static or group is None or not group.repository:
             self.set_message("find", "find: no repository to look in")
             return
+        if self.box_taken("find", "find"):
+            return
         self.box_for(finding=group.repository)
         box = self.query_one("#find", Input)
         box.border_title = ""
@@ -1304,9 +1350,23 @@ class IdeApp(App):
 
     def box_for(self, finding: Optional[str] = None, adding: bool = False,
                 instructing: Optional[IssueKey] = None) -> None:
-        """Set what the shared box is open for, one purpose, so an Enter in it does what its last opener asked
-        (#85)."""
+        """Set what the shared box is open for, one purpose, so an Enter in it does what its opener asked (#85)."""
         self.finding, self.adding, self.instructing = finding, adding, instructing
+        self.instructed_by = None
+
+    def box_taken(self, slot: str, name: str) -> bool:
+        """Whether the shared box is open, for the one purpose and issue its opener set; then the action `name`
+        does not open it, so as not to retitle, clear or take over that box, and the status line says why (#85)."""
+        if not self.query_one("#find", Input).display:
+            return False
+        if self.instructing is not None:
+            purpose = f"the instructions of {self.label(self.instructing)}"
+        elif self.adding:
+            purpose = "a new workspace"
+        else:
+            purpose = "a find"
+        self.set_message(slot, f"{name}: the box is open for {purpose}; Enter or Esc closes it first")
+        return True
 
     def end_find(self) -> None:
         self.box_for()
@@ -1315,11 +1375,13 @@ class IdeApp(App):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "find" and self.instructing is not None:
-            # Control and other non-printable characters dropped, outer blanks removed, the rest as typed; none, or
-            # only blanks, starts it as before (#85).
-            key, text = self.instructing, printable(event.value).strip()
+            # Whitespace as a plain space, other control and non-printable characters dropped, outer blanks removed,
+            # the rest as typed; none, or only blanks, starts it as before. The issue may have closed, or gained a
+            # session, while the box was open: what its opener checked is checked again (#85).
+            key, opener, text = self.instructing, self.instructed_by, printable(event.value).strip()
             self.end_find()
-            self.open_session(key, text)
+            if not self.refuses_to_open(key, opener):
+                self.open_session(key, text)
             return
         if event.input.id == "find" and self.adding:
             text = event.value.strip()

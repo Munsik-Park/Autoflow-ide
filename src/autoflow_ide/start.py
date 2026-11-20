@@ -200,8 +200,8 @@ def window_name(workspace: str, issue: int) -> str:
 
 async def open_coordination(coordinator: str, name: str, text: str, token: Optional[Path] = None) -> str:
     """Open a tmux window named `name` with a shell in the coordinator clone, start Claude Code there with
-    `text` as its first prompt, its non-printable characters dropped, and return the new pane's id. tmux moves to
-    the new window.
+    `text` as its first prompt, each whitespace character in it as a plain space and its other non-printable
+    characters dropped, and return the new pane's id. tmux moves to the new window.
     With `token` (a workspace's gh-token), Claude Code starts with that token as GH_TOKEN: the typed line reads
     the file, as the coordinator's tools/launch.sh does, so the token is neither typed nor in tmux's arguments."""
     if not os.environ.get("TMUX"):
