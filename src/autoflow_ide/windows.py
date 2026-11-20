@@ -1,6 +1,6 @@
 """The coordination session windows that `s` opens, found by their name, and closing them.
 
-`s` names the window `<workspace>#<issue>` (start.py). tmux turns automatic-rename off for a window created
+`s` and `S` name the window `<workspace>#<issue>` (start.py); an issue can have several. tmux turns automatic-rename off for a window created
 with a name, so the name stays while Claude Code runs in it. The windows are found by that name rather than
 remembered, so the ones opened before the IDE restarted are found too.
 """
@@ -24,9 +24,10 @@ class Window:
     panes: List[str] = field(default_factory=list)
 
 
-def parse_panes(text: str, workspace: str) -> Dict[int, Window]:
-    """The windows named `<workspace>#<issue>`, by issue, from `tmux list-panes -a -F PANES_FORMAT`."""
-    windows: Dict[int, Window] = {}
+def parse_panes(text: str, workspace: str) -> Dict[int, List[Window]]:
+    """Every window named `<workspace>#<issue>`, by issue, each with its own panes, in the order
+    `tmux list-panes -a -F PANES_FORMAT` lists them: an issue can have several coordination sessions."""
+    windows: Dict[int, List[Window]] = {}
     prefix = f"{workspace}#"
     for line in text.splitlines():
         parts = line.split(" ", 2)
@@ -36,9 +37,12 @@ def parse_panes(text: str, workspace: str) -> Dict[int, Window]:
         number = name[len(prefix):]
         if not name.startswith(prefix) or not number.isdigit():
             continue
-        window = windows.setdefault(int(number), Window(window_id, name))
-        if window.id == window_id:
-            window.panes.append(pane_id)
+        found = windows.setdefault(int(number), [])
+        window = next((w for w in found if w.id == window_id), None)
+        if window is None:
+            window = Window(window_id, name)
+            found.append(window)
+        window.panes.append(pane_id)
     return windows
 
 
@@ -58,7 +62,7 @@ async def tmux(*args: str) -> str:
 class TmuxWindows:
     """The windows of the tmux server the IDE runs in."""
 
-    async def find(self, workspace: str) -> Dict[int, Window]:
+    async def find(self, workspace: str) -> Dict[int, List[Window]]:
         """The coordination session windows of `workspace`, by issue; none outside tmux."""
         if not os.environ.get("TMUX"):
             return {}

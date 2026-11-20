@@ -12,9 +12,9 @@ FIXTURES = Path(__file__).parent / "fixtures"
 def test_coordination_windows_of_the_workspace_by_issue():
     windows = parse_panes((FIXTURES / "tmux-list-panes.txt").read_text(), "autoflow-sandbox")
     assert windows == {
-        4: Window("@2", "autoflow-sandbox#4", ["%2", "%3"]),     # split by hand: both panes
-        12: Window("@3", "autoflow-sandbox#12", ["%4"]),
-        7: Window("@7", "autoflow-sandbox#7", ["%8"]),           # in another tmux session
+        4: [Window("@2", "autoflow-sandbox#4", ["%2", "%3"])],     # split by hand: both panes
+        12: [Window("@3", "autoflow-sandbox#12", ["%4"])],
+        7: [Window("@7", "autoflow-sandbox#7", ["%8"])],           # in another tmux session
     }
     # Not: the IDE's window, an auto-named one, another workspace's, a name with more after the number or
     # more before the workspace.
@@ -85,3 +85,57 @@ async def test_no_places_outside_tmux(monkeypatch):
     from autoflow_ide.windows import pane_places
     monkeypatch.delenv("TMUX", raising=False)
     assert await pane_places() == {}
+
+
+# Several coordination sessions of one issue (#85)
+
+from autoflow_ide.runs import parse_status
+
+def test_every_window_of_an_issue_with_its_own_panes_in_listed_order():
+    # Two windows named autoflow-sandbox#6, the second split by split-window without -b as the coordinator's
+    # tools/terminals/tmux.py splits (tests/fixtures/README.md): both are found, not only the first (#85).
+    windows = parse_panes((FIXTURES / "tmux-list-panes-sessions.txt").read_text(), "autoflow-sandbox")
+    assert windows == {
+        6: [Window("@1", "autoflow-sandbox#6", ["%1"]), Window("@2", "autoflow-sandbox#6", ["%2", "%3"])],
+        8: [Window("@3", "autoflow-sandbox#8", ["%4"])],
+    }
+
+
+A = "autoflow-sandbox-6-2026-11-20-220000-aaaaaaaa"
+B = "autoflow-sandbox-6-2026-11-20-221000-bbbbbbbb"
+C = "autoflow-sandbox-6-2026-11-20-222000-cccccccc"
+
+
+@pytest.mark.parametrize("status, order", [
+    ("status-sessions.json", [C, B, A]),
+    ("status-sessions-reordered.json", [B, C, A]),     # a file added to B's run directory moves it first
+])
+def test_each_run_is_the_session_of_the_pane_its_coordination_surface_names(status, order):
+    # Matched by coordination.surface, not by status.py's order: the two runs of the first window's pane are
+    # two sessions of that pane, in run-name order, then the second window's (#85).
+    from autoflow_ide.sessions import sessions_of      # imported here: the rest of the file runs without it
+    windows = parse_panes((FIXTURES / "tmux-list-panes-sessions.txt").read_text(), "autoflow-sandbox")
+    runs = parse_status((FIXTURES / status).read_text())
+    assert [r.name for r in runs] == order
+    sessions = sessions_of(windows[6], [r for r in runs if r.issue == "6"], [])
+    assert [(s.pane, s.run.name) for s in sessions] == [("%1", A), ("%1", B), ("%2", C)]
+    # A window holding no run's pane is one session, by its first pane.
+    assert [(s.pane, s.run) for s in sessions_of(windows[8], [], [])] == [("%4", None)]
+
+
+def test_a_window_left_with_only_the_work_session_pane_of_a_run_is_no_session_of_its_own():
+    # A run's coordination pane %1 was killed while the run stays active; its window keeps only the work-session
+    # pane %2 that status.py gives as the run's session S1. That pane is the run's, not a second session: the run is
+    # the issue's one session, by the pane its run.env names (#85).
+    from autoflow_ide.sessions import sessions_of
+    windows = parse_panes((FIXTURES / "tmux-list-panes-lost-coordination.txt").read_text(), "autoflow-sandbox")
+    runs = parse_status((FIXTURES / "status-lost-coordination.json").read_text())
+    assert windows == {6: [Window("@1", "autoflow-sandbox#6", ["%2"])]}
+    assert [s.surface for s in runs[0].sessions] == ["%2"]
+    sessions = sessions_of(windows[6], runs, [])
+    assert [(s.pane, s.run.name, s.window) for s in sessions] == [
+        ("%1", "autoflow-sandbox-6-2026-11-21-090000-dddddddd", None)]
+    # A pane that is no run's work session, as a split by hand, is still the window's session.
+    hand = [Window("@1", "autoflow-sandbox#6", ["%2", "%7"])]
+    assert [(s.pane, s.run and s.run.name) for s in sessions_of(hand, runs, [])] == [
+        ("%7", None), ("%1", "autoflow-sandbox-6-2026-11-21-090000-dddddddd")]

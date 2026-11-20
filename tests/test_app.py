@@ -409,6 +409,11 @@ async def test_the_closed_row_goes_when_its_run_ends():
 from autoflow_ide.start import StartError
 
 
+async def open_lookup(repository, number):
+    """GitHub as the state read at Enter sees an issue: open (#85)."""
+    return Issue(number, f"issue {number}", state="open")
+
+
 def starting_app(starter, focuser=None):
     async def loader(repository):
         return [Issue(4, "four"), Issue(3, "three")]
@@ -417,13 +422,13 @@ def starting_app(starter, focuser=None):
         return RECORDED_RUNS      # issue 3 has a run
 
     return IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c", run_loader=runs,
-                  starter=starter, focuser=focuser)
+                  starter=starter, focuser=focuser, lookup=open_lookup)
 
 
 async def test_s_starts_a_run_for_the_issue_and_goes_back_to_it_the_second_time():
     starts, focused = [], []
 
-    async def starter(coordinator, repository, number):
+    async def starter(coordinator, repository, number, instructions=""):
         starts.append((coordinator, repository, number))
         return "%7"
 
@@ -435,6 +440,8 @@ async def test_s_starts_a_run_for_the_issue_and_goes_back_to_it_the_second_time(
         await settle(app, pilot)
         await pilot.press("down", "s")
         await settle(app, pilot)
+        await pilot.press("enter")                 # the instructions box, empty (#85)
+        await settle(app, pilot)
         assert starts == [("/c", "Munsik-Park/autoflow-sandbox", 4)]
         assert "#4: coordination session in %7" in status(app)
         await pilot.press("s")
@@ -443,7 +450,7 @@ async def test_s_starts_a_run_for_the_issue_and_goes_back_to_it_the_second_time(
 
 
 async def test_s_on_an_issue_with_a_run_or_a_failure_says_why():
-    async def starter(coordinator, repository, number):
+    async def starter(coordinator, repository, number, instructions=""):
         raise StartError("no workspace for Munsik-Park/autoflow-sandbox in /base")
 
     app = starting_app(starter)
@@ -454,11 +461,13 @@ async def test_s_on_an_issue_with_a_run_or_a_failure_says_why():
         assert "#3 already has a run: autoflow-sandbox-3-sample" in status(app)
         await pilot.press("down", "s")
         await settle(app, pilot)
+        await pilot.press("enter")                 # the instructions box, empty (#85)
+        await settle(app, pilot)
         assert "start #4: no workspace for Munsik-Park/autoflow-sandbox in /base" in status(app)
 
 
 async def test_s_without_a_coordinator():
-    async def starter(coordinator, repository, number):
+    async def starter(coordinator, repository, number, instructions=""):
         raise AssertionError("must not start")
 
     app = IdeApp(issues=[Issue(4, "four")], starter=starter)
@@ -679,7 +688,7 @@ class FakeWindows:
 
     async def find(self, workspace):
         assert workspace == "autoflow-sandbox"
-        return dict(self.open)
+        return {n: [w] for n, w in self.open.items()}      # every window of a name, a list each (#85)
 
     async def screens(self, window):
         number = int(window.name.split("#")[1])
@@ -713,9 +722,10 @@ def windows_app(windows, open_issues, runs, lookup, idle=0.2, check=0.05, **kw):
 
 
 def lookup_states(states, asked):
+    """Each issue's state as GitHub gives it: `states` by number, open for the others (#85)."""
     async def lookup(repository, number):
         asked.append(number)
-        return Issue(number, f"issue {number}", state=states[number])
+        return Issue(number, f"issue {number}", state=states.get(number, "open"))
     return lookup
 
 
@@ -1122,6 +1132,7 @@ def every_app(runs=(), recent=("autoflow-coordinator", "autoflow-sandbox", "gone
     async def given_runs(coordinator):
         return list(runs)
 
+    kw.setdefault("lookup", open_lookup)  # not the real gh (#85)
     return IdeApp(coordinator="/c", loader=given_loader or loader, run_loader=run_loader or given_runs,
                   workspaces_reader=workspaces_reader or workspaces, state_file=state_file, **kw)
 
@@ -1205,7 +1216,7 @@ async def test_a_redraw_before_a_key_press_onto_a_workspace_row_is_handled_keeps
 async def test_s_starts_the_issue_of_its_own_repository():
     started = []
 
-    async def starter(coordinator, repository, number):
+    async def starter(coordinator, repository, number, instructions=""):
         started.append((repository, number))
         return "%9"
 
@@ -1215,6 +1226,8 @@ async def test_s_starts_the_issue_of_its_own_repository():
         issues = app.query_one("#issues", DataTable)
         issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox#4"))
         await pilot.press("s")
+        await settle(app, pilot)
+        await pilot.press("enter")                 # the instructions box, empty (#85)
         await settle(app, pilot)
         assert started == [("Munsik-Park/autoflow-sandbox", 4)]
         assert "autoflow-sandbox#4: coordination session in %9" in status(app)
@@ -1226,7 +1239,7 @@ class EveryWindows(FakeWindows):
         self.open = windows
 
     async def find(self, workspace):
-        return {n: w for (ws, n), w in self.open.items() if ws == workspace}
+        return {n: [w] for (ws, n), w in self.open.items() if ws == workspace}     # a list each (#85)
 
     async def screens(self, window):
         return ["still"]
@@ -1318,7 +1331,7 @@ async def test_starting_a_run_remembers_its_workspace(tmp_path):
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"recent": ["autoflow-coordinator", "autoflow-sandbox"]}))
 
-    async def starter(coordinator, repository, number):
+    async def starter(coordinator, repository, number, instructions=""):
         return "%9"
 
     app = every_app(state_file=state, starter=starter)
@@ -1327,6 +1340,8 @@ async def test_starting_a_run_remembers_its_workspace(tmp_path):
         issues = app.query_one("#issues", DataTable)
         issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox#4"))
         await pilot.press("s")
+        await settle(app, pilot)
+        await pilot.press("enter")                 # the instructions box, empty (#85)
         await settle(app, pilot)
         assert json.loads(state.read_text()) == {"recent": ["autoflow-sandbox", "autoflow-coordinator"]}
 
@@ -1411,7 +1426,7 @@ async def test_hash_looks_up_an_issue_not_listed_and_s_says_it_is_closed():
         asked.append((repository, number))
         return Issue(number, "an old one", state="closed")
 
-    async def starter(coordinator, repository, number):
+    async def starter(coordinator, repository, number, instructions=""):
         started.append(number)
         return "%9"
 
@@ -1507,7 +1522,7 @@ async def test_hash_shows_what_the_number_is_and_s_starts_only_an_open_issue():
         return {29: Issue(29, "fix the tz", pull=True), 2: Issue(2, "old fix", state="closed", pull=True),
                 12: Issue(12, "an old one", state="closed")}[number]
 
-    async def starter(coordinator, repository, number):
+    async def starter(coordinator, repository, number, instructions=""):
         started.append(number)
         return "%9"
 
@@ -1528,7 +1543,7 @@ async def test_hash_shows_what_the_number_is_and_s_starts_only_an_open_issue():
 
 
 async def test_a_notice_shows_first_and_goes_while_counts_stay():
-    async def starter(coordinator, repository, number):
+    async def starter(coordinator, repository, number, instructions=""):
         return "%9"
 
     app = every_app(starter=starter, notice_sec=0.3)
@@ -1537,6 +1552,8 @@ async def test_a_notice_shows_first_and_goes_while_counts_stay():
         issues = app.query_one("#issues", DataTable)
         issues.move_cursor(row=keys(issues).index("Munsik-Park/autoflow-sandbox#4"))
         await pilot.press("s")
+        await settle(app, pilot)
+        await pilot.press("enter")                 # the instructions box, empty (#85)
         await settle(app, pilot)
         assert status(app).startswith("autoflow-sandbox#4: coordination session in %9  |  Munsik-Park/autoflow-sandbox")
         await pilot.pause(0.5)
@@ -1970,7 +1987,7 @@ async def test_a_window_showing_the_workflow_choice_marks_its_issue_within_one_c
 
 
 async def test_an_issue_started_with_s_is_marked_before_its_run_is_prepared():
-    async def starter(coordinator, repository, number):
+    async def starter(coordinator, repository, number, instructions=""):
         return "%4"
 
     windows = FakeWindows([], {4: [CHOICE]})
@@ -1978,6 +1995,8 @@ async def test_an_issue_started_with_s_is_marked_before_its_run_is_prepared():
     async with app.run_test() as pilot:
         await settle(app, pilot)
         await pilot.press("down", "s")
+        await settle(app, pilot)
+        await pilot.press("enter")                 # the instructions box, empty (#85)
         await settle(app, pilot)
         assert ("Munsik-Park/autoflow-sandbox", 4) in app.started
         windows.open[4] = Window("@4", "autoflow-sandbox#4", ["%4"])   # the window `s` opened
@@ -2054,7 +2073,8 @@ async def test_a_work_session_waiting_for_input_marks_its_issue():
         app.refresh_runs()
         await settle(app, pilot)
         assert app.current.run.name == "autoflow-sandbox-3-k"
-        assert marks(app) == {"3": WAIT_MARK, "4": ""}
+        # The two runs are two sessions, each a row under the issue (#85); the issues' own rows:
+        assert {k: m for k, m in marks(app).items() if "/" not in k} == {"3": WAIT_MARK, "4": ""}
 
 
 async def test_a_recorded_status_with_a_session_waiting_for_input_marks_its_issue():
@@ -2523,3 +2543,1299 @@ async def test_esc_and_a_new_find_clear_a_found_failure():
         await pilot.press("escape")                                  # clears what was found, and its failure
         await settle(app, pilot)
         assert "issue #13" not in status(app) and "13" not in keys(app.query_one("#issues", DataTable))
+
+
+# Several coordination sessions of one issue (#85). The runs are tests/fixtures/status-sessions.json (X2) and its
+# reordered recording (X3), the windows those of tests/fixtures/tmux-list-panes-sessions.txt (X1), as windows.py
+# finds them: every window of an issue, each with its own panes.
+
+from textual.widgets import Footer
+
+SESSIONS = parse_status((FIXTURES / "status-sessions.json").read_text())
+REORDERED = parse_status((FIXTURES / "status-sessions-reordered.json").read_text())
+RUN_A, RUN_B, RUN_C = sorted(SESSIONS, key=lambda r: r.name)     # A and B in pane %1 of @1, C in pane %2 of @2
+WINDOWS_6 = [Window("@1", "autoflow-sandbox#6", ["%1"]), Window("@2", "autoflow-sandbox#6", ["%2", "%3"])]
+WINDOWS_8 = [Window("@3", "autoflow-sandbox#8", ["%4"])]
+SANDBOX_WORKSPACE = WorkspaceEntry("autoflow-sandbox", "Munsik-Park/autoflow-sandbox", "~/s", "main")
+WIDE = (200, 40)
+
+
+class SessionWindows:
+    """Windows by issue, a list each, as windows.py finds every window of a name (#85). `screens` gives each
+    window's screens by window id in turn, then the last one: a string is its first pane's screen, the others
+    showing "> ". A close of a window in `fail_close` fails."""
+
+    def __init__(self, windows, screens=None, fail_close=()):
+        self.open = {n: list(ws) for n, ws in windows.items()}
+        self.given = screens or {}
+        self.fail_close = set(fail_close)
+        self.reads, self.finds, self.closed, self.closed_at = {}, 0, [], {}
+
+    async def find(self, workspace):
+        self.finds += 1
+        return {n: list(ws) for n, ws in self.open.items() if ws}
+
+    async def screens(self, window):
+        self.reads[window.id] = self.reads.get(window.id, 0) + 1
+        shown = self.given.get(window.id, ["> "])
+        screen = shown[min(self.reads[window.id], len(shown)) - 1]
+        return [screen] + ["> "] * (len(window.panes) - 1)
+
+    async def close(self, window):
+        if window.id in self.fail_close:
+            raise WindowError(f"can't find window: {window.id}")
+        for ws in self.open.values():
+            if window in ws:
+                ws.remove(window)
+        self.closed.append(window.id)
+        self.closed_at[window.id] = time.monotonic()
+
+
+def sessions_app(windows=None, runs=None, open_issues=None, lookup=None, idle=100, check=100, **kw):
+    """Issues 6, 8 and 4 of autoflow-sandbox; `runs` (X2 by default) and `open_issues` are lists or functions
+    giving them at each read. The window check runs only when a test calls check(), unless `check` is short."""
+    async def workspace(coordinator, repository):
+        return SANDBOX_WORKSPACE
+
+    async def places():
+        return {}
+
+    return windows_app(windows if windows is not None else SessionWindows({6: WINDOWS_6, 8: WINDOWS_8}),
+                       open_issues if open_issues is not None else [Issue(6, "six"), Issue(8, "eight"),
+                                                                    Issue(4, "four")],
+                       runs if runs is not None else SESSIONS, lookup or lookup_states({}, []),
+                       idle=idle, check=check, workspace_reader=workspace, placer=places, **kw)
+
+
+def issues_table(app):
+    return app.query_one("#issues", DataTable)
+
+
+def cursor_key(app):
+    table = issues_table(app)
+    return keys(table)[table.cursor_row] if table.row_count else None
+
+
+def children(app, key):
+    """The keys of the rows under the row `key` of an issue, up to the next issue's or workspace's row."""
+    bounds = {app.row_key(i) for i in app.issues} | {g.repository for g in app.groups}
+    rows = keys(issues_table(app))
+    under = []
+    for row in rows[rows.index(key) + 1:]:
+        if row in bounds:
+            break
+        under.append(row)
+    return under
+
+
+def row_text(app, key):
+    return " ".join(str(c) for c in issues_table(app).get_row(key))
+
+
+def info(app):
+    return str(app.query_one("#info", Static).render())
+
+
+def info_labels(app):
+    return [line[:10].strip() for line in info(app).splitlines()]
+
+
+def shown_run(app):
+    """Which of X2's runs the info names, or None."""
+    named = [r.name for r in (RUN_A, RUN_B, RUN_C) if r.name in info(app)]
+    assert len(named) <= 1, named
+    return named[0] if named else None
+
+
+async def highlight(app, pilot, key):
+    issues_table(app).move_cursor(row=keys(issues_table(app)).index(key))
+    await settle(app, pilot)
+
+
+async def highlight_now(app, pilot, key):
+    """As highlight, without waiting on a held worker (#85)."""
+    issues_table(app).move_cursor(row=keys(issues_table(app)).index(key))
+    await wait(pilot, 0.1)
+
+
+async def runs_by_row(app, pilot, key):
+    """The run each row under issue row `key` shows when highlighted, in row order."""
+    shown = []
+    for row in children(app, key):
+        await highlight(app, pilot, row)
+        shown.append(shown_run(app))
+    return shown
+
+
+def session_names(app):
+    return keys(app.query_one("#sessions", DataTable))
+
+
+async def test_each_session_of_an_issue_is_a_row_under_it_and_two_runs_of_one_pane_are_two_rows():
+    # Every window and every active run of the issue; the two runs of pane %1 are not folded into one row (#85).
+    app = sessions_app()
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await check(app, pilot)
+        rows = keys(issues_table(app))
+        assert rows[0] == "6" and len(children(app, "6")) == 3
+        assert rows[4:] == ["8", "4"]
+        assert await runs_by_row(app, pilot, "6") == [RUN_A.name, RUN_B.name, RUN_C.name]
+        # One session (issue 8's window) or none (issue 4): no child row and today's mark.
+        assert children(app, "8") == [] and children(app, "4") == []
+        assert (marks(app)["6"], marks(app)["8"], marks(app)["4"]) == (RUN_MARK, "", "")
+
+
+async def test_a_prompt_in_the_second_window_alone_marks_the_issue_and_that_windows_session():
+    # The issue's mark is that of any of its sessions, and each window is judged on its own (#79, #85).
+    windows = SessionWindows({6: WINDOWS_6, 8: WINDOWS_8}, {"@2": [CHOICE]})
+    app = sessions_app(windows)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await check(app, pilot)
+        assert marks(app)["6"] == WAIT_MARK
+        by_run = dict(zip(await runs_by_row(app, pilot, "6"), children(app, "6")))
+        assert marks(app)[by_run[RUN_C.name]] == WAIT_MARK                  # C's pane is in @2
+        assert marks(app)[by_run[RUN_A.name]] == marks(app)[by_run[RUN_B.name]] == RUN_MARK
+
+
+def recording_starter(starts, pane="%9", error=None):
+    async def starter(coordinator, repository, number, instructions):
+        starts.append((repository, number, instructions))
+        if error:
+            raise error
+        return pane
+    return starter
+
+
+async def test_S_opens_another_session_for_an_issue_with_runs_and_adds_its_row_at_once():
+    # As s does, also when the issue has sessions and runs; the row is there before any window check (#85).
+    starts = []
+    windows = SessionWindows({6: WINDOWS_6, 8: WINDOWS_8})
+    app = sessions_app(windows, starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await check(app, pilot)
+        await highlight(app, pilot, "6")
+        await pilot.press("S")
+        await settle(app, pilot)
+        assert app.query_one("#find", Input).display                       # the instructions box (#85)
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [("Munsik-Park/autoflow-sandbox", 6, "")]
+        new = [k for k in children(app, "6") if "%9" in row_text(app, k)]
+        assert len(children(app, "6")) == 4 and len(new) == 1
+        assert cursor_key(app) == new[0]
+
+
+async def test_S_refuses_what_s_refuses():
+    # A closed issue, a pull request, a starter's StartError (an unusable gh-token), no coordinator (#85).
+    starts = []
+    issues = [Issue(5, "five", state="closed"), Issue(7, "seven", pull=True), Issue(4, "four")]
+    error = StartError("autoflow-sandbox/gh-token: readable by you only: chmod 600")
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=issues, starter=recording_starter(starts, error=error))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        await highlight(app, pilot, "5")
+        await pilot.press("S")
+        await settle(app, pilot)
+        assert "#5 is closed" in status(app) and not box.display
+        await highlight(app, pilot, "7")
+        await pilot.press("S")
+        await settle(app, pilot)
+        assert "#7 is a pull request" in status(app) and not box.display
+        await highlight(app, pilot, "4")
+        await pilot.press("S")
+        await settle(app, pilot)
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [("Munsik-Park/autoflow-sandbox", 4, "")]
+        assert "start #4: autoflow-sandbox/gh-token: readable by you only: chmod 600" in status(app)
+        assert children(app, "4") == []
+
+    app = IdeApp(issues=[Issue(4, "four")], starter=recording_starter(starts))
+    async with app.run_test() as pilot:
+        await pilot.press("S")
+        await settle(app, pilot)
+        assert "start: needs --coordinator" in status(app)
+        assert len(starts) == 1
+
+
+@pytest.mark.parametrize("key", ["s", "S"])
+@pytest.mark.parametrize("typed, passed", [
+    ("  focus on  tests  ", "focus on  tests"),     # outer blanks removed, inner ones kept (#85)
+    ("   ", ""),                                    # blanks only: none, as today
+    ("", ""),
+])
+async def test_s_and_S_ask_for_instructions_and_pass_them_as_typed(key, typed, passed):
+    # The box opens; Enter passes its text to the starter (#85).
+    starts = []
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press(key)
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display and box.value == "" and app.focused is box
+        box.value = typed
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [("Munsik-Park/autoflow-sandbox", 4, passed)]
+        assert not box.display
+
+
+@pytest.mark.parametrize("key", ["s", "S"])
+async def test_esc_in_the_instructions_box_opens_nothing(key):
+    starts = []
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press(key)
+        await settle(app, pilot)
+        assert app.query_one("#find", Input).display
+        await pilot.press("f", "o", "c", "u", "s", "escape")
+        await settle(app, pilot)
+        assert starts == [] and not app.query_one("#find", Input).display
+
+
+async def test_highlighting_a_session_shows_its_own_run_in_every_pane():
+    # Each row its own label, and its own run's lines, steps and sessions (#85).
+    app = sessions_app(SessionWindows({}))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        rows = children(app, "6")
+        assert len(rows) == 3 and len({row_text(app, k) for k in rows}) == 3
+        for row in rows:
+            await highlight(app, pilot, row)
+            assert shown_run(app) is not None, row_text(app, row)
+            run = next(r for r in SESSIONS if r.name == shown_run(app))
+            for label, value in (("run", run.name), ("branch", run.branch), ("worktree", run.checkout),
+                                 ("records", run.records)):
+                assert f"{label.ljust(10)}{value}" in info(app)
+            assert run_pane_names(app) == [s.shown for s in run.steps]
+            assert session_names(app) == [s.name for s in run.sessions]
+        assert sorted(await runs_by_row(app, pilot, "6")) == [RUN_A.name, RUN_B.name, RUN_C.name]
+
+
+async def test_a_session_keeps_its_run_and_step_when_status_py_lists_the_runs_in_another_order():
+    # X3 lists B first; each row still shows its own run, and the run pane's cursor stays on its step (#85).
+    given = [SESSIONS]
+    app = sessions_app(SessionWindows({}), runs=lambda: given[0])
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        before = dict(zip(children(app, "6"), await runs_by_row(app, pilot, "6")))
+        assert RUN_B.name in before.values()
+        row_b = next(k for k, name in before.items() if name == RUN_B.name)
+        await highlight(app, pilot, row_b)
+        app.query_one("#run", DataTable).move_cursor(row=1)
+        given[0] = REORDERED
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert cursor_key(app) == row_b and shown_run(app) == RUN_B.name
+        assert app.query_one("#run", DataTable).cursor_row == 1
+        assert dict(zip(children(app, "6"), await runs_by_row(app, pilot, "6"))) == before
+
+
+async def test_moving_to_another_session_starts_its_run_and_sessions_panes_at_the_top():
+    # A different run does not keep the previous run's cursor row (#85).
+    app = sessions_app(SessionWindows({}))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        by_run = dict(zip(await runs_by_row(app, pilot, "6"), children(app, "6")))
+        await highlight(app, pilot, by_run[RUN_B.name])
+        app.query_one("#run", DataTable).move_cursor(row=2)
+        app.query_one("#sessions", DataTable).move_cursor(row=1)
+        await pilot.pause()
+        await highlight(app, pilot, by_run[RUN_A.name])
+        assert shown_run(app) == RUN_A.name
+        assert app.query_one("#run", DataTable).cursor_row == 0
+        assert app.query_one("#sessions", DataTable).cursor_row == 0
+
+
+async def test_enter_on_a_session_row_goes_to_its_coordination_pane():
+    # The pane opened for it before its run; its run's coordination surface after, the same pane for the
+    # two runs of one pane; a pane that is gone is said on the status line (#85).
+    starts, focused = [], []
+    fail = []
+
+    async def focuser(surface):
+        if surface in fail:
+            raise FocusError(f"can't find pane: {surface}")
+        focused.append(surface)
+
+    app = sessions_app(SessionWindows({}), starter=recording_starter(starts), focuser=focuser)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        by_run = dict(zip(await runs_by_row(app, pilot, "6"), children(app, "6")))
+        for name, pane in ((RUN_A.name, "%1"), (RUN_B.name, "%1"), (RUN_C.name, "%2")):
+            await highlight(app, pilot, by_run[name])
+            await pilot.press("enter")
+            await settle(app, pilot)
+            assert focused[-1] == pane
+        await highlight(app, pilot, "6")
+        await pilot.press("S")
+        await settle(app, pilot)
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert cursor_key(app) in children(app, "6") and "%9" in row_text(app, cursor_key(app))
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert focused == ["%1", "%1", "%2", "%9"]
+        fail.append("%9")
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert "can't find pane: %9" in status(app)
+
+
+async def test_the_windows_of_an_issue_are_closed_each_on_its_own_wait():
+    # Issue 6 is closed and has no run; @2's screen changes later than @1's, so it is closed later (#28, #85).
+    windows = SessionWindows({6: WINDOWS_6}, {"@2": [f"{n}" for n in range(8)]})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], lookup=lookup_states({6: "closed"}, []),
+                       idle=0.3, check=0.05)
+    async with app.run_test(size=WIDE) as pilot:
+        await wait(pilot, 0.5)
+        assert windows.closed == ["@1"]
+        await wait(pilot, 0.6)
+        assert windows.closed == ["@1", "@2"]
+        assert windows.closed_at["@2"] - windows.closed_at["@1"] >= 0.2
+
+
+async def test_a_failed_close_of_one_window_leaves_the_other_closed():
+    windows = SessionWindows({6: WINDOWS_6}, fail_close={"@1"})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], lookup=lookup_states({6: "closed"}, []),
+                       idle=0.2, check=0.05)
+    async with app.run_test(size=WIDE) as pilot:
+        await wait(pilot, 0.6)
+        assert windows.closed == ["@2"]
+        assert "can't find window: @1" in status(app)
+
+
+async def test_the_sessions_of_an_issue_are_found_again_after_a_restart_keyed_by_their_panes():
+    # A new app reads the runs first, then the windows; each run's row keeps its key, and the windows
+    # with no run (issue 4's two) are shown under their issue after the first window read (#85).
+    windows = SessionWindows({6: WINDOWS_6, 4: [Window("@5", "autoflow-sandbox#4", ["%6"]),
+                                                Window("@6", "autoflow-sandbox#4", ["%7"])]})
+    app = sessions_app(windows)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        before = dict(zip(children(app, "6"), await runs_by_row(app, pilot, "6")))
+        assert sorted(before.values()) == [RUN_A.name, RUN_B.name, RUN_C.name]
+        await check(app, pilot)
+        assert dict(zip(children(app, "6"), await runs_by_row(app, pilot, "6"))) == before
+        under = children(app, "4")
+        assert len(under) == 2
+        assert "%6" in row_text(app, under[0]) and "%7" in row_text(app, under[1])
+
+
+async def test_the_row_of_an_issue_with_several_sessions_shows_no_single_run():
+    # Empty run and sessions panes, the repository and workspace with no run lines, and the count; an issue
+    # with one session shows its run on its own row, as today (#85).
+    app = sessions_app(SessionWindows({}), runs=SESSIONS + RECORDED_RUNS,
+                       open_issues=[Issue(6, "six"), Issue(3, "three"), Issue(4, "four")])
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await highlight(app, pilot, "6")
+        assert app.query_one("#run", DataTable).row_count == 0
+        assert app.query_one("#sessions", DataTable).row_count == 0
+        labels = info_labels(app)
+        assert "repo" in labels and "workspace" in labels and "sessions  3" in info(app)
+        assert not {"run", "branch", "worktree", "records"} & set(labels)
+        assert "3 sessions" in status(app)
+        await highlight(app, pilot, "3")
+        assert children(app, "3") == []
+        assert "run       autoflow-sandbox-3-sample" in info(app)
+        assert app.query_one("#run", DataTable).row_count == len(RECORDED_RUNS[0].steps)
+
+
+async def test_s_on_a_session_row_goes_to_its_pane_and_on_the_parent_row_says_so():
+    # On a session row s goes to its pane; on the row of an issue with several sessions it says so (#85).
+    starts, focused = [], []
+
+    async def focuser(surface):
+        focused.append(surface)
+
+    app = sessions_app(SessionWindows({}), starter=recording_starter(starts), focuser=focuser)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        by_run = dict(zip(await runs_by_row(app, pilot, "6"), children(app, "6")))
+        await highlight(app, pilot, by_run[RUN_C.name])
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert focused == ["%2"] and starts == [] and not app.query_one("#find", Input).display
+        await highlight(app, pilot, "6")
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert focused == ["%2"] and starts == [] and not app.query_one("#find", Input).display
+        assert "#6 has 3 sessions" in status(app)
+
+
+async def test_s_goes_back_to_a_window_found_after_a_restart():
+    # Issue 8's one window was opened before this app started (nothing in its own opens) (#85).
+    starts, focused = [], []
+
+    async def focuser(surface):
+        focused.append(surface)
+
+    app = sessions_app(starter=recording_starter(starts), focuser=focuser)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await check(app, pilot)
+        await highlight(app, pilot, "8")
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert focused == ["%4"] and starts == [] and not app.query_one("#find", Input).display
+
+
+async def test_s_reads_the_windows_again_before_opening_the_box():
+    # Addition 3: a window the periodic check has not found yet is gone back to, and no box opens.
+    starts, focused = [], []
+
+    async def focuser(surface):
+        focused.append(surface)
+
+    windows = SessionWindows({6: WINDOWS_6})
+    app = sessions_app(windows, starter=recording_starter(starts), focuser=focuser)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await check(app, pilot)
+        windows.open[4] = [Window("@5", "autoflow-sandbox#4", ["%6"])]
+        await highlight(app, pilot, "4")
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert focused == ["%6"] and starts == [] and not app.query_one("#find", Input).display
+
+
+class HeldStarter:
+    """A starter whose calls wait until the test releases them; the first returns pane %9, the next %10."""
+
+    def __init__(self):
+        self.calls, self.release = [], asyncio.Event()
+
+    async def __call__(self, coordinator, repository, number, instructions):
+        self.calls.append((repository, number, instructions))
+        pane = f"%{8 + len(self.calls)}"
+        await self.release.wait()
+        return pane
+
+
+async def test_s_during_an_open_of_the_issue_opens_no_box_and_starts_nothing():
+    # The guard is set when the box is submitted, before the starter returns (#85).
+    starter = HeldStarter()
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")], starter=starter)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("s")
+        await settle(app, pilot)
+        await pilot.press("enter")
+        await wait(pilot, 0.1)                       # the starter is held: settle would wait on it
+        assert len(starter.calls) == 1
+        await pilot.press("s")
+        await wait(pilot, 0.1)
+        assert not app.query_one("#find", Input).display
+        assert "#4: opening the coordination session" in status(app)
+        starter.release.set()
+        await settle(app, pilot)
+        assert len(starter.calls) == 1
+
+
+class HeldFindWindows(SessionWindows):
+    """SessionWindows whose reads, once `hold` is set, wait until the test releases them (#85)."""
+
+    def __init__(self, windows):
+        super().__init__(windows)
+        self.hold, self.release = False, asyncio.Event()
+
+    async def find(self, workspace):
+        if self.hold:
+            await self.release.wait()
+        return await super().find(workspace)
+
+
+async def test_s_whose_window_read_ends_during_an_S_open_opens_no_box_and_starts_nothing():
+    # `s` reads the windows again before it decides; an S submitted during that read is opening a session whose
+    # pane is not known yet, so when the read returns `s` opens no box and no second session (#85).
+    starter, windows = HeldStarter(), HeldFindWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], starter=starter)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        windows.hold = True
+        await pilot.press("s")                       # its worker waits on the window read
+        await wait(pilot, 0.1)
+        await pilot.press("S")
+        await wait(pilot, 0.1)
+        await pilot.press("enter")                   # the S open: its starter is held
+        await wait(pilot, 0.1)
+        assert len(starter.calls) == 1 and app.opening
+        windows.release.set()                        # the read of `s` returns while the open is in progress
+        await wait(pilot, 0.2)
+        assert not app.query_one("#find", Input).display
+        assert "#4: opening the coordination session" in status(app)
+        await pilot.press("enter")
+        await wait(pilot, 0.1)
+        assert len(starter.calls) == 1
+        starter.release.set()
+        await settle(app, pilot)
+        assert len(starter.calls) == 1
+        assert list(app.started.values()) == [["%9"]]
+
+
+async def test_a_second_S_does_not_cancel_an_open_in_progress():
+    # Both opens complete and both panes are sessions under the issue (#85).
+    starter = HeldStarter()
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")], starter=starter)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        for _ in range(2):
+            await pilot.press("S")
+            await wait(pilot, 0.1)                   # a held start: settle would wait on it
+            await pilot.press("enter")
+            await wait(pilot, 0.1)
+        assert len(starter.calls) == 2
+        starter.release.set()
+        await settle(app, pilot)
+        under = children(app, "4")
+        assert len(under) == 2
+        assert "%9" in row_text(app, under[0]) and "%10" in row_text(app, under[1])
+
+
+def every_sessions_app(given, loader_calls=None, **kw):
+    """Every workspace of EVERY, autoflow-sandbox listing issues 6 and 4; the runs are given[0] at each read."""
+    async def loader(repository, limit):
+        if loader_calls is not None:
+            loader_calls.append(repository)
+        if repository == "Munsik-Park/autoflow-sandbox":
+            return [Issue(6, "six"), Issue(4, "four")]
+        return []
+
+    async def runs(coordinator):
+        return list(given[0])
+
+    async def places():
+        return {}
+
+    return every_app(loader=loader, run_loader=runs, windows=SessionWindows({}), placer=places, **kw)
+
+
+async def test_a_second_run_of_an_issue_unfolds_its_workspace_and_moves_to_its_session():
+    # Runs are compared by name, not by the issues that have one (#85).
+    given = [[RUN_A]]
+    app = every_sessions_app(given)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await highlight(app, pilot, "Munsik-Park/autoflow-sandbox")
+        await pilot.press("enter")                                          # fold it; the cursor is on its row
+        await settle(app, pilot)
+        assert "Munsik-Park/autoflow-sandbox#6" not in keys(issues_table(app))
+        given[0] = [RUN_A, RUN_C]
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert "Munsik-Park/autoflow-sandbox#6" in keys(issues_table(app))
+        assert cursor_key(app) in children(app, "Munsik-Park/autoflow-sandbox#6")
+        assert shown_run(app) == RUN_C.name
+
+
+async def test_a_run_ending_while_another_of_its_issue_stays_reads_the_issues_again():
+    # Runs are compared by name, not by the issues that have one (#85).
+    given = [[RUN_A, RUN_C]]
+    calls = []
+
+    async def loader(repository):
+        calls.append(repository)
+        return [Issue(6, "six")]
+
+    async def runs(coordinator):
+        return list(given[0])
+
+    app = IdeApp(repository="Munsik-Park/autoflow-sandbox", loader=loader, coordinator="/c", run_loader=runs,
+                 windows=SessionWindows({}), window_check_sec=100)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        read = len(calls)
+        given[0] = [RUN_C]
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert len(calls) == read + 1
+
+
+async def test_the_cursor_stays_on_a_new_session_when_its_window_is_found_and_its_run_prepared():
+    # The key is the pane, from the open to the prepared run. Issue 6 has C's session already, so the
+    # new one is the second and has a row of its own (#85).
+    starts = []
+    given = [[RUN_C]]
+    windows = SessionWindows({})
+    run = Run("autoflow-sandbox-6-2026-11-20-230000-dddddddd", [Step("analysis", "running")], issue="6",
+              coordination="%9")
+    app = sessions_app(windows, runs=lambda: given[0], open_issues=[Issue(6, "six"), Issue(4, "four")],
+                       starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("S")
+        await settle(app, pilot)
+        await pilot.press("enter")
+        await settle(app, pilot)
+        row = cursor_key(app)
+        assert row in children(app, "6") and "%9" in row_text(app, row)
+        windows.open[6] = [Window("@9", "autoflow-sandbox#6", ["%9"])]
+        await check(app, pilot)
+        assert cursor_key(app) == row
+        given[0] = [RUN_C, run]
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert cursor_key(app) == row
+        assert run.name in info(app) and run_pane_names(app) == ["analysis"]
+
+
+async def test_a_second_run_in_the_shown_sessions_pane_keeps_the_cursor_on_the_run_it_showed():
+    # <pane> becomes <pane>/<run>; the IDE moves the cursor, and it is not taken for a key press (#85).
+    given = [[RUN_A, RUN_C]]
+    app = sessions_app(SessionWindows({}), runs=lambda: given[0])
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        by_run = dict(zip(await runs_by_row(app, pilot, "6"), children(app, "6")))
+        await highlight(app, pilot, by_run[RUN_A.name])
+        given[0] = [RUN_A, RUN_B, RUN_C]
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert cursor_key(app) in children(app, "6") and shown_run(app) == RUN_A.name
+        assert run_pane_names(app) == [s.shown for s in RUN_A.steps]
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert shown_run(app) == RUN_A.name
+
+
+async def test_the_cursor_goes_to_the_issue_when_its_session_is_gone():
+    # The session's window and run are gone; the issue has one session left, shown on its own row (#85).
+    given = [[RUN_A, RUN_C]]
+    windows = SessionWindows({6: WINDOWS_6})
+    app = sessions_app(windows, runs=lambda: given[0])
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await check(app, pilot)
+        by_run = dict(zip(await runs_by_row(app, pilot, "6"), children(app, "6")))
+        await highlight(app, pilot, by_run[RUN_C.name])
+        windows.open[6] = [WINDOWS_6[0]]
+        given[0] = [RUN_A]
+        await check(app, pilot)
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert children(app, "6") == [] and cursor_key(app) == "6"
+        assert shown_run(app) == RUN_A.name
+
+
+async def test_an_issue_that_gains_a_second_session_moves_the_cursor_to_the_session_it_showed():
+    # Addition 2: the cursor on the issue's own row, showing its one run, goes to that run's row.
+    given = [[RUN_A]]
+    app = sessions_app(SessionWindows({}), runs=lambda: given[0])
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await highlight(app, pilot, "6")
+        assert shown_run(app) == RUN_A.name
+        given[0] = [RUN_A, RUN_C]
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert cursor_key(app) in children(app, "6") and shown_run(app) == RUN_A.name
+        app.refresh_runs()
+        await settle(app, pilot)
+        assert shown_run(app) == RUN_A.name
+
+
+@pytest.mark.parametrize("every", [False, True])
+async def test_every_footer_key_fits_at_124_columns_and_S_is_next_to_s(every):
+    # One repository and every workspace; nothing checks app.py's Footer line otherwise (#85).
+    app = every_app() if every else coordinated_app()
+    async with app.run_test(size=(124, 36)) as pilot:
+        await settle(app, pilot)
+        drawn = list(app.query_one(Footer).children)
+        palette = [k for k in drawn if getattr(k, "action", "") == "command_palette"]
+        bindings = [k for k in drawn if k not in palette]
+        assert len(palette) == 1
+        spans = [(k.region.x, k.region.right) for k in bindings]
+        assert all(right <= palette[0].region.x for _, right in spans)
+        assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:]))
+        names = [k.key for k in bindings]
+        assert names[names.index("s") + 1] == "S"
+
+
+async def test_session_rows_follow_folding_and_a():
+    given = [SESSIONS]
+    app = every_sessions_app(given)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        issue = "Munsik-Park/autoflow-sandbox#6"
+        assert len(children(app, issue)) == 3
+        await highlight(app, pilot, "Munsik-Park/autoflow-sandbox")
+        await pilot.press("enter")                                          # fold
+        await settle(app, pilot)
+        assert issue not in keys(issues_table(app))
+        assert children(app, "Munsik-Park/autoflow-sandbox") == []
+        await pilot.press("a")                                              # only the issues with a run
+        await settle(app, pilot)
+        assert len(children(app, issue)) == 3
+
+
+async def test_the_step_detail_and_its_cause_are_those_of_the_highlighted_sessions_run():
+    # The step detail of #83 per session (#85): the two runs of pane %1 each open their own steps.
+    app = sessions_app(SessionWindows({}))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        by_run = dict(zip(await runs_by_row(app, pilot, "6"), children(app, "6")))
+        for name, index, cause, other in ((RUN_B.name, 1, 0, RUN_A.name), (RUN_A.name, 2, 1, RUN_B.name)):
+            await highlight(app, pilot, by_run[name])
+            await pilot.press("2")
+            app.query_one("#run", DataTable).move_cursor(row=index)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, StepDetail)
+            assert app.screen.query_one("#detail").border_title == f"Step {index + 1}  ↺ review-2 ← review-1"
+            text = detail_text(app)
+            assert f"{name}/review-2" in text and other not in text
+            await pilot.press("c")
+            await pilot.pause()
+            assert not isinstance(app.screen, StepDetail)
+            assert app.query_one("#run", DataTable).cursor_row == cause
+            await pilot.press("1")
+
+
+# The instructions box: what reaches it and what it passes (#85)
+
+async def test_the_instructions_box_passes_no_control_characters():
+    # A paste keeps the control characters of its first line; they are dropped, then the blanks (#85).
+    starts = []
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("S")
+        await settle(app, pilot)
+        app.query_one("#find", Input).value = "\x15 touch x \x1b[2J#"
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [("Munsik-Park/autoflow-sandbox", 4, "touch x [2J#")]
+
+
+async def test_hash_while_an_instructions_box_is_open_leaves_that_box_and_its_enter_to_its_issue():
+    # The box is bound to the purpose and the issue its opener set: `#` with the focus off the box opens no find
+    # and says why; the box keeps its title and text, and its Enter starts the session it was opened for (#85).
+    starts, asked = [], []
+
+    async def lookup(repository, number):
+        if number == 4:
+            return Issue(4, "four")                                 # the state read at Enter, not a find (#85)
+        asked.append(number)
+        return Issue(number, "an old one", state="closed")
+
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")], lookup=lookup,
+                       starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("S")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        box.value = "tests first"
+        await pilot.press("tab")                                    # focus leaves the box, which stays shown
+        await pilot.press("number_sign")
+        await settle(app, pilot)
+        assert "find: the box is open for the instructions of #4" in status(app)
+        assert box.display and box.border_title == "Instructions for #4" and box.value == "tests first"
+        box.focus()
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [("Munsik-Park/autoflow-sandbox", 4, "tests first")] and asked == []
+
+
+async def test_w_while_an_instructions_box_is_open_leaves_that_box_and_its_enter_to_its_issue():
+    # As with `#`, for `w` (#85).
+    starts, created = [], []
+
+    async def creator(coordinator, address):
+        created.append(address)
+        return "%20"
+
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")],
+                       starter=recording_starter(starts), workspace_creator=creator)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("S")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        box.value = "tests first"
+        await pilot.press("tab", "w")
+        await settle(app, pilot)
+        assert "add workspace: the box is open for the instructions of #4" in status(app)
+        assert box.border_title == "Instructions for #4" and box.value == "tests first"
+        box.focus()
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [("Munsik-Park/autoflow-sandbox", 4, "tests first")] and created == []
+
+
+@pytest.mark.parametrize("opener", ["number_sign", "w"])
+async def test_S_while_a_find_or_workspace_box_is_open_leaves_that_box_alone(opener):
+    # The other way round: S opens no instructions box over a find's or a new workspace's (#85).
+    starts, created = [], []
+
+    async def creator(coordinator, address):
+        created.append(address)
+        return "%20"
+
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")],
+                       starter=recording_starter(starts), workspace_creator=creator)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press(opener)
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        title, placeholder = box.border_title, box.placeholder
+        box.value = "4" if opener == "number_sign" else "Munsik-Park/other"
+        await pilot.press("tab", "S")
+        await settle(app, pilot)
+        assert "S: the box is open for" in status(app)
+        assert (box.border_title, box.placeholder) == (title, placeholder) and app.instructing is None
+        box.focus()
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == []
+        assert created == ([] if opener == "number_sign" else ["Munsik-Park/other"])
+
+
+def closing_list(issues):
+    """The open issues as a function of the list read: `issues[0]` at each read, which a test changes."""
+    return lambda: list(issues[0])
+
+
+@pytest.mark.parametrize("key", ["s", "S"])
+async def test_an_issue_that_leaves_the_open_list_while_its_box_is_open_gets_no_session(key):
+    # The issue closes while the instructions are typed and the next read of the list drops it: on Enter the
+    # checks of s and S are made again, nothing opens, the box closes and the status line says why (#85).
+    starts, listed = [], [[Issue(4, "four"), Issue(8, "eight")]]
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=closing_list(listed), starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press(key)
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display and box.border_title == "Instructions for #4"
+        box.value = "go"
+        listed[0] = [Issue(8, "eight")]
+        app.action_refresh_issues()
+        await settle(app, pilot)
+        assert box.display and box.value == "go"                   # the read leaves the box as it is
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [] and not box.display
+        assert "#4 is no longer listed" in status(app)
+
+
+async def test_an_issue_with_runs_that_closes_while_its_S_box_is_open_gets_no_session():
+    # Issue 6 has runs, so its row stays when it leaves the open list, marked closed: Enter in its S box says it is
+    # closed and opens nothing (#85).
+    starts, listed = [], [[Issue(6, "six"), Issue(4, "four")]]
+    app = sessions_app(SessionWindows({}), open_issues=closing_list(listed), lookup=lookup_states({6: "closed"}, []),
+                       starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await highlight(app, pilot, "6")
+        await pilot.press("S")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display and box.border_title == "Instructions for #6"
+        listed[0] = [Issue(4, "four")]
+        app.action_refresh_issues()
+        await settle(app, pilot)
+        await settle(app, pilot)                                    # the closed row's lookup
+        assert app.find_issue(("Munsik-Park/autoflow-sandbox", 6)).closed
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [] and not box.display and "#6 is closed" in status(app)
+
+
+async def test_a_window_found_while_the_s_box_is_open_is_gone_back_to_by_s_not_doubled_by_enter():
+    # `s` opens a box only for an issue with no session; one found while the box is open (a window opened from
+    # elsewhere) makes Enter open nothing and say so, as `s` would (#85).
+    starts = []
+    windows = SessionWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("s")
+        await settle(app, pilot)
+        windows.open[4] = [Window("@5", "autoflow-sandbox#4", ["%6"])]
+        await check(app, pilot)
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [] and not app.query_one("#find", Input).display
+        assert "#4 has a session: s goes to it, or S for another" in status(app)
+
+
+async def test_S_during_the_window_read_of_s_keeps_its_box_for_its_own_issue():
+    # `s` on issue 4 waits on its window read; S on issue 8 opens the box meanwhile and text is typed. When the
+    # read returns, `s` leaves that box alone, and its Enter starts issue 8's session, not 4's (#85).
+    starter, windows = HeldStarter(), HeldFindWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four"), Issue(8, "eight")], starter=starter)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        windows.hold = True
+        await pilot.press("s")                                     # issue 4; its worker waits on the read
+        await wait(pilot, 0.1)
+        await highlight_now(app, pilot, "8")
+        await pilot.press("S")
+        await wait(pilot, 0.1)
+        box = app.query_one("#find", Input)
+        box.value = "for eight"
+        windows.release.set()
+        await wait(pilot, 0.2)
+        assert box.display and box.border_title == "Instructions for #8" and box.value == "for eight"
+        assert "s: the box is open for the instructions of #8" in status(app)
+        await pilot.press("enter")
+        await wait(pilot, 0.1)
+        starter.release.set()
+        await settle(app, pilot)
+        assert starter.calls == [("Munsik-Park/autoflow-sandbox", 8, "for eight")]
+
+
+@pytest.mark.parametrize("opener", ["number_sign", "w"])
+async def test_a_find_or_workspace_box_opened_during_the_window_read_of_s_is_left_to_its_opener(opener):
+    # `#` or `w` during the read of `s`: when the read returns, the box keeps its purpose and text, and its Enter
+    # finds or adds, starting no session (#85).
+    starts, created, asked = [], [], []
+
+    async def creator(coordinator, address):
+        created.append(address)
+        return "%20"
+
+    async def lookup(repository, number):
+        asked.append(number)
+        return Issue(number, "an old one", state="closed")
+
+    windows = HeldFindWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], lookup=lookup,
+                       starter=recording_starter(starts), workspace_creator=creator)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        windows.hold = True
+        await pilot.press("s")
+        await wait(pilot, 0.1)
+        await pilot.press(opener)
+        await wait(pilot, 0.1)
+        box = app.query_one("#find", Input)
+        title, placeholder = box.border_title, box.placeholder
+        typed = "12" if opener == "number_sign" else "Munsik-Park/other"
+        box.value = typed
+        windows.release.set()
+        await wait(pilot, 0.2)
+        assert box.display and (box.border_title, box.placeholder, box.value) == (title, placeholder, typed)
+        assert app.instructing is None
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == []
+        assert (asked, created) == (([12], []) if opener == "number_sign" else ([], ["Munsik-Park/other"]))
+
+
+async def test_s_on_a_session_row_of_a_closed_issue_goes_to_the_session():
+    # Issue 6 left the open list closed and still has its runs; `s` on a session's row goes there, as Enter does,
+    # and on the issue's row it still says the issue is closed (#85).
+    starts, focused = [], []
+
+    async def focuser(surface):
+        focused.append(surface)
+
+    app = sessions_app(SessionWindows({}), open_issues=[Issue(4, "four")], lookup=lookup_states({6: "closed"}, []),
+                       starter=recording_starter(starts), focuser=focuser)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await settle(app, pilot)
+        by_run = dict(zip(await runs_by_row(app, pilot, "6"), children(app, "6")))
+        await highlight(app, pilot, by_run[RUN_C.name])
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert focused == ["%2"] and starts == []
+        await highlight(app, pilot, "6")
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert focused == ["%2"] and "#6 is closed" in status(app)
+
+
+# The open decided at Enter from the state read then, failing closed (#85)
+
+class HeldLookup:
+    """A lookup of the issue's state whose reads wait until the test releases them, then give `answer`: a state,
+    "pull" for a pull request, or an IssueSourceError raised (#85)."""
+
+    def __init__(self, answer):
+        self.answer, self.asked, self.release = answer, [], asyncio.Event()
+
+    async def __call__(self, repository, number):
+        self.asked.append(number)
+        await self.release.wait()
+        if isinstance(self.answer, IssueSourceError):
+            raise self.answer
+        if self.answer == "pull":
+            return Issue(number, f"issue {number}", state="open", pull=True)
+        return Issue(number, f"issue {number}", state=self.answer)
+
+
+@pytest.mark.parametrize("answer, said", [
+    ("closed", "#6 is closed"),
+    ("pull", "#6 is a pull request"),
+    (IssueSourceError("HTTP 502"), "#6: nothing opened: its state could not be read: HTTP 502"),
+    ("open", None),
+])
+async def test_an_issue_with_runs_whose_state_is_unknown_at_enter_opens_only_when_github_says_it_is_open(answer, said):
+    # Issue 6 has runs and leaves the open list while its S box is open; its row's state is unknown while it is
+    # looked up. Enter reads the state from GitHub before deciding, and opens only an issue it finds open (#85).
+    starts, listed, lookup = [], [[Issue(6, "six"), Issue(4, "four")]], HeldLookup(answer)
+    app = sessions_app(SessionWindows({}), open_issues=closing_list(listed), lookup=lookup,
+                       starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await highlight(app, pilot, "6")
+        await pilot.press("S")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display and box.border_title == "Instructions for #6"
+        listed[0] = [Issue(4, "four")]
+        app.action_refresh_issues()
+        await wait(pilot, 0.2)
+        assert app.find_issue(("Munsik-Park/autoflow-sandbox", 6)).state is None    # looked up, held
+        await pilot.press("enter")
+        await wait(pilot, 0.2)
+        assert starts == [] and not box.display
+        lookup.release.set()
+        await settle(app, pilot)
+        if said is None:
+            assert starts == [("Munsik-Park/autoflow-sandbox", 6, "")]
+        else:
+            assert starts == [] and said in status(app)
+
+
+async def test_a_window_opened_by_hand_while_the_s_box_is_open_is_found_at_enter_and_gets_no_second_session():
+    # A `<workspace>#<issue>` window opened outside the IDE while the box is open, before any window check:
+    # Enter reads the issue's windows again, opens nothing and says the issue has a session (#85).
+    starts = []
+    windows = SessionWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("s")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display
+        windows.open[4] = [Window("@5", "autoflow-sandbox#4", ["%6"])]   # no check runs (check=100)
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [] and not box.display
+        assert "#4 has a session: s goes to it, or S for another" in status(app)
+
+
+class FailingWindows(SessionWindows):
+    """SessionWindows whose listing fails once `fail` is set, as tmux does with no server (#85)."""
+
+    def __init__(self, windows):
+        super().__init__(windows)
+        self.fail = False
+
+    async def find(self, workspace):
+        if self.fail:
+            raise WindowError("no server running on /tmp/tmux-501/default")
+        return await super().find(workspace)
+
+
+async def test_s_opens_nothing_when_the_windows_cannot_be_read_before_the_box_or_at_enter():
+    # The issue's windows are what tells `s` it has no session; when tmux cannot list them, `s` opens neither the
+    # box nor, at Enter, a session, and the status line says why (#85).
+    starts = []
+    windows = FailingWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        windows.fail = True
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert not box.display
+        assert "#4: nothing opened: its windows could not be read: no server running" in status(app)
+        windows.fail = False
+        await pilot.press("s")
+        await settle(app, pilot)
+        assert box.display
+        windows.fail = True
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [] and not box.display
+        assert "#4: nothing opened: its windows could not be read: no server running" in status(app)
+
+
+RUN_4 = Run("autoflow-sandbox-4-2026-11-21-100000-dddddddd", issue="4", branch="issue-4-2026-11-21-100000-dddddddd")
+
+
+@pytest.mark.parametrize("then, said", [
+    ([RUN_4], "#4 already has a run: autoflow-sandbox-4-2026-11-21-100000-dddddddd"),
+    (RunSourceError("status.py exited with status 1"), "#4: nothing opened: the runs could not be read"),
+])
+async def test_s_at_enter_reads_the_runs_again_and_opens_nothing_for_a_run_or_runs_it_cannot_read(then, said):
+    # A run of issue 4 listed by status.py since the last read, or a read that fails: Enter in the `s` box opens
+    # nothing and says why (#85).
+    starts, runs = [], [[]]
+
+    def read_runs():
+        if isinstance(runs[0], Exception):
+            raise runs[0]
+        return list(runs[0])
+
+    app = sessions_app(SessionWindows({}), runs=read_runs, open_issues=[Issue(4, "four")],
+                       starter=recording_starter(starts), run_refresh_sec=100)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("s")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display
+        runs[0] = then
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert starts == [] and not box.display and said in status(app)
+
+
+async def test_an_open_started_during_the_enter_reads_of_s_keeps_s_from_opening_a_second_session():
+    # Enter in the `s` box marks the open as in progress before it reads the windows again: `s` meanwhile opens no
+    # box, and an S open submitted meanwhile makes the `s` open nothing when its reads return (#85).
+    starter, windows = HeldStarter(), HeldFindWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], starter=starter)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("s")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        box.value = "by s"
+        windows.hold = True
+        await pilot.press("enter")                   # its reads wait on the window listing
+        await wait(pilot, 0.1)
+        assert app.opening and not box.display
+        await pilot.press("s")
+        await wait(pilot, 0.1)
+        assert not box.display and "#4: opening the coordination session" in status(app)
+        await pilot.press("S")
+        await wait(pilot, 0.1)
+        box.value = "by S"
+        await pilot.press("enter")                   # the S open: its starter is held
+        await wait(pilot, 0.1)
+        assert starter.calls == [("Munsik-Park/autoflow-sandbox", 4, "by S")]
+        windows.release.set()                        # the reads of the `s` Enter return during the S open
+        await wait(pilot, 0.2)
+        assert "#4: opening the coordination session" in status(app)
+        starter.release.set()
+        await settle(app, pilot)
+        assert starter.calls == [("Munsik-Park/autoflow-sandbox", 4, "by S")]
+        assert list(app.started.values()) == [["%9"]] and not app.opening
+
+
+@pytest.mark.parametrize("key", ["s", "S"])
+async def test_an_issue_the_list_shows_open_but_github_says_closed_at_enter_gets_no_session(key):
+    # The issue closed on GitHub while its box was open, before the next read of the list: its row still shows it
+    # open, and the state read at Enter says closed, so nothing opens and the status line says why (#85).
+    starts, asked = [], []
+    states = {}
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")],
+                       lookup=lookup_states(states, asked), starter=recording_starter(starts))
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press(key)
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display
+        states[4] = "closed"
+        assert app.find_issue(("Munsik-Park/autoflow-sandbox", 4)).state == "open"
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert asked == [4]
+        assert starts == [] and not box.display and "#4 is closed" in status(app)
+
+
+class StaleFindWindows(SessionWindows):
+    """SessionWindows whose next listing, once `hold` is set, is taken at once and returned only when the test
+    releases it, as a periodic check that began before a window was opened ends after it (#85)."""
+
+    def __init__(self, windows):
+        super().__init__(windows)
+        self.hold, self.release = False, asyncio.Event()
+
+    async def find(self, workspace):
+        found = await super().find(workspace)
+        if self.hold:
+            self.hold = False
+            await self.release.wait()
+        return found
+
+
+async def test_a_window_check_that_began_before_a_window_opened_and_ends_during_enter_does_not_hide_it():
+    # A periodic window check lists no window of issue 4; a window is opened by hand; Enter in the `s` box finds
+    # it; the older check then ends while Enter reads the runs and shows no window again. The decision is made
+    # from what Enter read, so nothing opens (#85).
+    starts = []
+    windows = StaleFindWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], starter=recording_starter(starts),
+                       run_refresh_sec=100)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("s")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display
+        windows.hold = True
+        app.check_windows()                          # its listing has no window of issue 4, and is held
+        await wait(pilot, 0.1)
+        windows.open[4] = [Window("@5", "autoflow-sandbox#4", ["%6"])]
+
+        async def read_runs(coordinator):
+            windows.release.set()                    # the older check ends while Enter reads the runs
+            await asyncio.sleep(0.2)
+            return []
+
+        app.run_loader = read_runs
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert ("Munsik-Park/autoflow-sandbox", 4) not in app.windows_found    # the older check ended last
+        assert starts == [] and not box.display
+        assert "#4 has a session: s goes to it, or S for another" in status(app)
+
+
+RUN_4_PANE = Run("autoflow-sandbox-4-2026-11-21-100000-dddddddd", issue="4",
+                 branch="issue-4-2026-11-21-100000-dddddddd", coordination="%7")
+
+
+async def test_a_run_read_that_began_before_a_run_started_and_ends_during_enter_does_not_hide_it():
+    # A periodic read of the runs lists no run of issue 4; a run of it starts; Enter in the `s` box reads it; the
+    # older read then ends while Enter reads where the panes are and shows no run again. The decision is made from
+    # what Enter read, so nothing opens (#85).
+    starts, release = [], asyncio.Event()
+    app = sessions_app(SessionWindows({}), runs=[], open_issues=[Issue(4, "four")],
+                       starter=recording_starter(starts), run_refresh_sec=100)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("s")
+        await settle(app, pilot)
+        box = app.query_one("#find", Input)
+        assert box.display
+        reads = []
+
+        async def read_runs(coordinator):
+            reads.append(coordinator)
+            if len(reads) == 1:                      # the periodic read: taken before the run started, held
+                await release.wait()
+                return []
+            return [RUN_4_PANE]
+
+        async def places():
+            release.set()                            # the older read ends while Enter reads the pane places
+            await asyncio.sleep(0.2)
+            return {}
+
+        app.run_loader, app.placer = read_runs, places
+        app.refresh_runs()
+        await wait(pilot, 0.1)
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert len(reads) == 2 and app.runs == []    # the older read ended last
+        assert starts == [] and not box.display
+        assert "#4 already has a run: autoflow-sandbox-4-2026-11-21-100000-dddddddd" in status(app)
