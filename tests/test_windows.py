@@ -121,3 +121,21 @@ def test_each_run_is_the_session_of_the_pane_its_coordination_surface_names(stat
     assert [(s.pane, s.run.name) for s in sessions] == [("%1", A), ("%1", B), ("%2", C)]
     # A window holding no run's pane is one session, by its first pane.
     assert [(s.pane, s.run) for s in sessions_of(windows[8], [], [])] == [("%4", None)]
+
+
+def test_a_window_left_with_only_the_work_session_pane_of_a_run_is_no_session_of_its_own():
+    # A run's coordination pane %1 was killed while the run stays active; its window keeps only the work-session
+    # pane %2 that status.py gives as the run's session S1. That pane is the run's, not a second session: the run is
+    # the issue's one session, by the pane its run.env names (#85).
+    from autoflow_ide.sessions import sessions_of
+    windows = parse_panes((FIXTURES / "tmux-list-panes-lost-coordination.txt").read_text(), "autoflow-sandbox")
+    runs = parse_status((FIXTURES / "status-lost-coordination.json").read_text())
+    assert windows == {6: [Window("@1", "autoflow-sandbox#6", ["%2"])]}
+    assert [s.surface for s in runs[0].sessions] == ["%2"]
+    sessions = sessions_of(windows[6], runs, [])
+    assert [(s.pane, s.run.name, s.window) for s in sessions] == [
+        ("%1", "autoflow-sandbox-6-2026-11-21-090000-dddddddd", None)]
+    # A pane that is no run's work session, as a split by hand, is still the window's session.
+    hand = [Window("@1", "autoflow-sandbox#6", ["%2", "%7"])]
+    assert [(s.pane, s.run and s.run.name) for s in sessions_of(hand, runs, [])] == [
+        ("%7", None), ("%1", "autoflow-sandbox-6-2026-11-21-090000-dddddddd")]

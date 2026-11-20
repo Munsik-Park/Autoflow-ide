@@ -3026,6 +3026,47 @@ async def test_s_during_an_open_of_the_issue_opens_no_box_and_starts_nothing():
         assert len(starter.calls) == 1
 
 
+class HeldFindWindows(SessionWindows):
+    """SessionWindows whose reads, once `hold` is set, wait until the test releases them (#85)."""
+
+    def __init__(self, windows):
+        super().__init__(windows)
+        self.hold, self.release = False, asyncio.Event()
+
+    async def find(self, workspace):
+        if self.hold:
+            await self.release.wait()
+        return await super().find(workspace)
+
+
+async def test_s_whose_window_read_ends_during_an_S_open_opens_no_box_and_starts_nothing():
+    # review-1 R1: `s` reads the windows again before it decides; an S submitted during that read is opening a
+    # session whose pane is not known yet, so when the read returns `s` opens no box and no second session (#85).
+    starter, windows = HeldStarter(), HeldFindWindows({})
+    app = sessions_app(windows, runs=[], open_issues=[Issue(4, "four")], starter=starter)
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        windows.hold = True
+        await pilot.press("s")                       # its worker waits on the window read
+        await wait(pilot, 0.1)
+        await pilot.press("S")
+        await wait(pilot, 0.1)
+        await pilot.press("enter")                   # the S open: its starter is held
+        await wait(pilot, 0.1)
+        assert len(starter.calls) == 1 and app.opening
+        windows.release.set()                        # the read of `s` returns while the open is in progress
+        await wait(pilot, 0.2)
+        assert not app.query_one("#find", Input).display
+        assert "#4: opening the coordination session" in status(app)
+        await pilot.press("enter")
+        await wait(pilot, 0.1)
+        assert len(starter.calls) == 1
+        starter.release.set()
+        await settle(app, pilot)
+        assert len(starter.calls) == 1
+        assert list(app.started.values()) == [["%9"]]
+
+
 async def test_a_second_S_does_not_cancel_an_open_in_progress():
     # F4, D6: both opens complete and both panes are sessions under the issue.
     starter = HeldStarter()

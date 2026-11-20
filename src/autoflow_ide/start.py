@@ -187,10 +187,11 @@ def instruction(workspace: str, issue: int, text: str = "") -> str:
 
 
 def printable(text: str) -> str:
-    """`text` without its control and other non-printable characters. They would reach the line editor of the
-    shell the line is typed into, which acts on them (Ctrl-U erases the line typed so far), whatever the quoting
-    (#85)."""
-    return "".join(c for c in text if c.isprintable())
+    """`text` with each whitespace character (tab, line breaks, no-break and other spaces) as a plain space, and
+    without its control and other non-printable characters. They would reach the line editor of the shell the line
+    is typed into, which acts on them (Ctrl-U erases the line typed so far), whatever the quoting; a space keeps
+    the words apart (#85)."""
+    return "".join(" " if c.isspace() else c for c in text if c.isspace() or c.isprintable())
 
 
 def window_name(workspace: str, issue: int) -> str:

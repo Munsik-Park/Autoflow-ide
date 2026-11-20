@@ -943,6 +943,10 @@ class IdeApp(App):
         instructions box when the issue still has no session; otherwise go back to its one session with no run, or
         say why not (#85)."""
         await self.read_windows_of(key)
+        if self.opening.get(key):
+            # An S submitted during the read is opening a session whose pane is not known yet (#85).
+            self.set_message("start", f"{self.label(key)}: opening the coordination session")
+            return
         issue = self.find_issue(key)
         sessions = self.sessions(issue) if issue else []
         if not sessions:
@@ -1114,8 +1118,8 @@ class IdeApp(App):
             pass  # the app is closing: its widgets are gone
 
     async def close_finished_windows(self) -> None:
-        """Close the coordination session window of each issue that is closed and has no run, window_idle_sec
-        after the later of its screen's last change and the first check that found the issue closed with no run,
+        """Close each window of every issue that is closed and has no run, each on its own: window_idle_sec after
+        the later of that window's last screen change and the first check that found the issue closed with no run,
         so a session waiting when its issue closed keeps its window for the whole wait. GitHub is asked
         again just before the window is closed, so an issue reopened during the wait keeps it. One issue can take
         several runs, so an open issue keeps its window after a run ends; a merge closes the issue before the run

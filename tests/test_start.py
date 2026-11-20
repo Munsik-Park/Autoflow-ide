@@ -382,13 +382,19 @@ async def test_start_run_with_no_instructions_types_todays_line(tmp_path, monkey
 @pytest.mark.parametrize("text, kept", [
     ("\x15touch x #", "touch x #"),                         # Ctrl-U, then a command
     ("stop\x03 here", "stop here"),                         # Ctrl-C
-    ("one\rtwo", "onetwo"),                                 # CR
-    ("one\ntwo", "onetwo"),                                 # LF
+    ("one\rtwo", "one two"),                                # CR, a space
+    ("one\ntwo", "one two"),                                # LF, a space
     ("\x1b[2Jclear \x1b]0;title\x07it", "[2Jclear ]0;titleit"),   # ESC sequences and BEL
     ("del\x7fete", "delete"),                               # DEL
-    ("c1\x85\x9bcontrols", "c1controls"),                   # C1 controls (NEL, CSI)
-    ("tab\there", "tabhere"),
+    ("c1\x85\x9bcontrols", "c1 controls"),                  # C1 controls: NEL a line break, CSI dropped
+    ("tab\there", "tab here"),
     ("한글 지시 그대로", "한글 지시 그대로"),                      # printable non-ASCII is kept
+    # Every other whitespace character is a plain space, so the words stay apart (#85).
+    ("fix\u00a0the\u202fparser", "fix the parser"),         # no-break spaces
+    ("thin\u2009and\u2003em", "thin and em"),               # thin and em spaces
+    ("전각\u3000공백", "전각 공백"),                             # ideographic space
+    ("one\u2028two\u2029three", "one two three"),          # line and paragraph separators
+    ("v\x0bf\x0cr\r\nend", "v f r  end"),                  # VT, FF, CR LF
 ])
 async def test_start_run_drops_control_characters_from_the_instructions(tmp_path, monkeypatch, text, kept):
     base = tmp_path / "base"
