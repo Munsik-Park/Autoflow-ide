@@ -3275,7 +3275,7 @@ async def test_session_rows_follow_folding_and_a():
 
 
 async def test_the_step_detail_and_its_cause_are_those_of_the_highlighted_sessions_run():
-    # CN2 (#83 per session): the two runs of pane %1 each open their own steps.
+    # The step detail of #83 per session (#85): the two runs of pane %1 each open their own steps.
     app = sessions_app(SessionWindows({}))
     async with app.run_test(size=WIDE) as pilot:
         await settle(app, pilot)
