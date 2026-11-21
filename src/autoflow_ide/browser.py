@@ -129,17 +129,6 @@ class PageReporter(Reporter):
         self.page.open_view(pane, lambda error: app.pane_gone(key, pane, error, self))
 
 
-class Collected(Reporter):
-    """Answers kept to be returned in a response."""
-    detached = True
-
-    def __init__(self):
-        self.said = []
-
-    def say(self, slot: str, text: str) -> None:
-        self.said.append(text)
-
-
 class BrowserServer:
     def __init__(self, app: IdeApp, port: int = 0):
         self.app, self.port = app, port
@@ -332,6 +321,12 @@ class BrowserServer:
             page.say(why)
             return
         label = self.app.label(key)
+        # Each tab, line break or other space as a plain space and every other control or non-printable character
+        # dropped, as for the run's instructions: a CR, Ctrl-C or escape sequence would act as a key press (#86).
+        text = printable(text).strip()
+        if not text:
+            page.say(f"{label}: nothing to enter")
+            return
         try:
             await enter_message(self.app.windows, pane, text)
         except (InputRefused, WindowError) as e:
@@ -373,9 +368,9 @@ class BrowserServer:
         try:
             screen = await self.app.windows.pane_screen(pane)
         except WindowError as e:
-            told = Collected()
-            self.app.pane_gone(key, pane, str(e), told)
-            return {"error": "; ".join(told.said)}
+            # A GET changes no state: the pane is dropped from its issue by a go-to or the next read of the
+            # windows, not by this read (#86).
+            return {"error": f"{self.app.label(key)}: {pane}: {e}"}
         session_id = await self.app.windows.session_id(pane)
         if not session_id:
             return {"screen": screen, "about": ["transcript not known: this session was not opened by the IDE"],

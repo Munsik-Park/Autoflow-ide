@@ -37,6 +37,11 @@
     color: $text-muted;
 }
 
+/* Browser control's address on a row of its own above the status line, while it runs (#86). */
+#status.with-browser {
+    height: 2;
+}
+
 StepDetail, FolderView, OutputView {
     align: center middle;
 }

@@ -1728,9 +1728,18 @@ class IdeApp(App):
         parts += [(group.repository if group else self.repository) or ("every workspace" if self.every else "(no repository)"),
                   (f"#{issue.number}" + (f" ({kind})" if kind else "")) if issue else "no issue",
                   f"{several} sessions" if several else run.name if run else "no run"]
-        parts += [m for s, m in self.messages.items() if m and s not in NOTICE_SLOTS]
+        parts += [m for s, m in self.messages.items() if m and s not in NOTICE_SLOTS and s != "browser"]
+        browser = self.messages.get("browser")
         try:
-            self.query_one("#status", Static).update("  |  ".join(parts))
+            status = self.query_one("#status", Static)
+            if browser:
+                # Browser control's address, or why it could not start, on a row of its own above the rest, so a
+                # notice or the rest of the line never pushes it out of a 124-column screen (#86).
+                status.add_class("with-browser")
+                status.update(Text(browser + "\n" + "  |  ".join(parts), no_wrap=True, overflow="ellipsis"))
+            else:
+                status.remove_class("with-browser")
+                status.update("  |  ".join(parts))
         except NoMatches:
             pass  # the app is closing (a timer can fire meanwhile): its widgets are gone
 
