@@ -1148,7 +1148,8 @@ class IdeApp(App):
         return None, found
 
     async def find_windows_of(self, key: IssueKey) -> Tuple[Optional[str], List[Window]]:
-        """The windows of issue `key`, read now and neither kept nor shown. Returns why they were not read and the
+        """The windows of issue `key`, read now; the windows are neither kept nor shown, though the repository's
+        workspace is looked up and kept when it is not known yet. Returns why they were not read and the
         windows: None and the windows read; NO_WORKSPACE when the coordinator names no workspace for the
         repository (no window can be opened for it either: the starter, which looks for the workspace again, says
         why), with the windows last found; or else why tmux could not list them (#85, #86)."""
