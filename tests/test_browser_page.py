@@ -382,3 +382,73 @@ async def test_a_page_of_another_localhost_port_can_neither_act_nor_read():
             assert t.starts == []
         finally:
             await runner.cleanup()
+
+
+# One message at a time, and no frame of a closed view (#86)
+
+class GatedPaste(PaneWindows):
+    """PaneWindows whose paste waits for `gate`, so a message stays in flight until the test lets it go (#86)."""
+
+    def __init__(self, windows):
+        super().__init__(windows)
+        self.gate, self.pasting = asyncio.Event(), asyncio.Event()
+
+    async def paste(self, pane, text):
+        self.pasting.set()
+        await self.gate.wait()
+        await super().paste(pane, text)
+
+
+async def test_send_is_not_sent_again_while_a_message_is_in_flight():
+    t = Harness(windows=GatedPaste({4: [Window("@4", "autoflow-sandbox#4", ["%7"])]}))
+    t.windows.texts["%7"] = [TURN_END, drafted(TURN_END, "hello")]
+    async with t.app.run_test(size=WIDE) as pilot:
+        await settle(t.app, pilot)
+        base = await browser_on(t.app, pilot)
+        async with Chromium() as page:
+            await page.goto(base)
+            await until(lambda: rows_of(page, "#issues [data-row]"))
+            await page.click('#issues [data-row="4"]')
+            await page.fill("#message-text", "hello")
+            await until(lambda: asyncio.sleep(0, result=bool(requests_of(page, "POST"))))
+            posts = len(requests_of(page, "POST"))
+            await page.evaluate("() => { const b = document.querySelector('#message-send'); b.click(); b.click(); }")
+            await asyncio.wait_for(t.windows.pasting.wait(), 5)
+            assert await page.is_disabled("#message-send")
+            await page.evaluate("() => document.querySelector('#message-send').click()")
+            await asyncio.sleep(0.3)
+            assert len(requests_of(page, "POST")) == posts + 1
+            t.windows.gate.set()
+            await until(lambda: page.evaluate(
+                "() => document.querySelector('#messages').textContent.includes('#4: message entered in %7')"))
+            await until(lambda: page.is_enabled("#message-send"))
+            await settle(t.app, pilot)
+            assert t.windows.writes == [("paste", "%7", "hello"), ("send-keys", "%7", "Enter")]
+
+
+async def test_a_frame_delivered_after_close_draws_nothing():
+    t = Harness(windows=PaneWindows({4: [Window("@4", "autoflow-sandbox#4", ["%7"])]}))
+    async with t.app.run_test(size=WIDE) as pilot:
+        await settle(t.app, pilot)
+        base = await browser_on(t.app, pilot)
+        async with Chromium() as page:
+            await page.goto(base)
+            await until(lambda: rows_of(page, "#issues [data-row]"))
+            served = next(iter(t.app.browser.pages.values()))
+            sent, put = [], served.put
+            served.put = lambda message: (sent.append(message), put(message))
+            await page.click('#issues [data-row="4"]')
+            await page.click("#go")
+            await page.wait_for_selector("#view .xterm-rows")
+            frame = next(m for m in sent if m["type"] == "frame")
+            await page.click("#view-close")
+            await until(lambda: asyncio.sleep(0, result=not [w for w in t.app.workers
+                                                             if str(w.group) == served.view_group
+                                                             and w.is_running]))
+            await until(lambda: page.evaluate("() => !document.querySelector('#view .xterm')"))
+            put(frame)                                                   # one queued before the Close (#86)
+            await asyncio.sleep(0.5)
+            assert await page.locator("#view .xterm").count() == 0
+            assert await page.text_content("#view-name") == ""
+            await page.click("#go")                                       # a view opened again draws (#86)
+            await page.wait_for_selector("#view .xterm-rows")

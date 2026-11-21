@@ -259,6 +259,16 @@ async def test_a_message_is_pasted_checked_and_then_submitted(tmp_path, monkeypa
     assert (tmp_path / "loaded").read_text() == "look at the second step"
 
 
+async def test_each_paste_has_a_buffer_of_its_own(tmp_path, monkeypatch):
+    # Two pastes to one pane at once must not load into the same buffer (#86).
+    import re
+    log = dispatching_tmux(tmp_path, monkeypatch)
+    await TmuxWindows().paste("%7", "alpha")
+    await TmuxWindows().paste("%7", "beta")
+    loads = [re.fullmatch(r"load-buffer -b (\S+) -", c) for c in log.read_text().splitlines() if c.startswith("load")]
+    assert len(loads) == 2 and all(loads) and loads[0][1] != loads[1][1]
+
+
 async def test_no_enter_when_the_input_area_does_not_show_the_text(tmp_path, monkeypatch):
     from autoflow_ide.inputs import InputRefused, enter_message
     empty = (FIXTURES / "screens" / "turn-end.txt").read_text()

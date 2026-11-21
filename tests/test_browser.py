@@ -14,8 +14,9 @@ The server as these tests use it, which the page's own script uses too:
 - `GET <base>ws`: the page's WebSocket. Its first message is `{"type": "hello", "page": <page id>}`; then
   `{"type": "state", "state": <snapshot>}` at once and after each read the screen shows; `{"type": "message",
   "text": ...}` for what the IDE says to this page; `{"type": "instructions", "repository", "number", "opener"}` when
-  this page's instructions box opens; `{"type": "frame", "pane", "rows", "cursor": [x, y], "cursor_visible",
-  "width", "height"}` for the open view; `{"type": "stopped"}` at stop.
+  this page's instructions box opens; `{"type": "view", "view": <number>, "pane"}` when a view opens, then
+  `{"type": "frame", "view", "pane", "rows", "cursor": [x, y], "cursor_visible", "width", "height"}` for it;
+  `{"type": "message-done"}` when a message action ends; `{"type": "stopped"}` at stop.
 - `POST <base>action`, `Content-Type: application/json`, `Origin` the server's own: `{"page": <page id>, "action":
   <name>, ...}`, answered `200` once accepted; what it does is told to that page over its WebSocket. The actions:
   `select` {row}; `start` {row} (s); `new-session` {row} (S); `instructions` {repository, number, opener, text}
@@ -1251,6 +1252,38 @@ async def test_the_records_of_a_gone_pane_say_it_is_gone_and_a_go_to_drops_it(tm
             assert session_panes(t.app, 4) == []
 
 
+async def test_the_records_of_a_seen_pane_that_is_gone_change_no_state_and_a_go_to_drops_it():
+    # A window check saw the started pane; then its window is gone. The GET reads the windows for its own answer
+    # only: the pane stays the issue's session until a POST action or the next window check (#86).
+    t = Harness()
+    async with t.app.run_test(size=WIDE) as pilot:
+        await settle(t.app, pilot)
+        base = await browser_on(t.app, pilot)
+        async with Page(base) as page:
+            await page.act("start", row="4")
+            await settle(t.app, pilot)
+            await page.act("instructions", repository=REPO, number=4, opener="s", text="")
+            await settle(t.app, pilot)
+            t.windows.open = {4: [Window("@7", "autoflow-sandbox#4", ["%7"])]}
+            await t.app.check_windows_once()
+            await settle(t.app, pilot)
+            assert "%7" in t.app.opened_seen and session_panes(t.app, 4) == ["%7"]
+            t.windows.open, t.windows.gone = {}, {"%7"}
+            state = (dict(t.app.started), set(t.app.opened_seen), dict(t.app.windows_found), issue_rows(t.app),
+                     page.state())
+            pushes = len(page.of("state"))
+            records = await page.get("records", row="4")
+            await settle(t.app, pilot)
+            assert records == {"error": "#4: %7: can't find pane: %7"}
+            assert (dict(t.app.started), set(t.app.opened_seen), dict(t.app.windows_found), issue_rows(t.app),
+                    page.state()) == state
+            assert len(page.of("state")) == pushes and session_panes(t.app, 4) == ["%7"]
+            await page.act("go", row="4")
+            await settle(t.app, pilot)
+            assert "%7" not in t.app.started.get((REPO, 4), []) and session_panes(t.app, 4) == []
+            assert t.focused == [] and not page.of("frame")
+
+
 # Input to a session (#86)
 
 def input_harness():
@@ -1342,3 +1375,60 @@ async def test_prompt_keys_reach_only_a_screen_that_shows_a_prompt():
             t.windows.modes["%7"] = False
             await settle(t.app, pilot)
             assert t.windows.writes[-1] == ("send-keys", "%7", "Down")
+
+
+class LivePane(PaneWindows):
+    """PaneWindows whose pane %7 keeps its input area as Claude Code does: a paste adds to the draft, Enter submits
+    the draft and empties it; each read and write lets other tasks run, as tmux's would. The first read of an action
+    waits, up to a second, until a second action has reached it too, so two actions sent together both reach the
+    screen check unless one waits for the other (#86)."""
+
+    def __init__(self):
+        super().__init__({4: [Window("@4", "autoflow-sandbox#4", ["%7"])]})
+        self.draft, self.submitted = "", []
+        self.arrived, self.both = 0, asyncio.Event()
+
+    async def in_mode(self, pane):
+        self.arrived += 1
+        if self.arrived >= 2:
+            self.both.set()
+        try:
+            await asyncio.wait_for(self.both.wait(), 1.0)
+        except asyncio.TimeoutError:
+            pass
+        return await super().in_mode(pane)
+
+    async def pane_screen(self, pane):
+        await asyncio.sleep(0)
+        self.read("screen", pane)
+        return drafted(TURN_END, self.draft) if self.draft else TURN_END
+
+    async def paste(self, pane, text):
+        await asyncio.sleep(0)
+        await super().paste(pane, text)
+        self.draft += text
+
+    async def send_keys(self, pane, *keys):
+        await asyncio.sleep(0)
+        await super().send_keys(pane, *keys)
+        if keys == ("Enter",) and self.draft:
+            self.submitted.append(self.draft)
+            self.draft = ""
+
+
+async def test_two_overlapping_messages_to_one_pane_are_entered_one_at_a_time():
+    # Two pages, or a double click, send at once: the pane gets whole submitted messages, or one and a refusal,
+    # never the two pasted into one draft (#86).
+    t = Harness(windows=LivePane())
+    async with t.app.run_test(size=WIDE) as pilot:
+        await settle(t.app, pilot)
+        base = await browser_on(t.app, pilot)
+        async with Page(base) as page, Page(base) as other:
+            await asyncio.gather(page.act("message", row="4", text="alpha"),
+                                 other.act("message", row="4", text="beta"))
+            await settle(t.app, pilot)
+            assert t.windows.draft == ""
+            assert sorted(t.windows.submitted) == ["alpha", "beta"] or (
+                len(t.windows.submitted) == 1 and any("not empty" in text for text in page.texts() + other.texts()))
+            assert all(m in ("alpha", "beta") for m in t.windows.submitted)
+            assert page.of("message-done") and other.of("message-done")
