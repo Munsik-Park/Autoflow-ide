@@ -44,7 +44,7 @@ from textual.worker import WorkerCancelled, WorkerState
 
 from autoflow_ide.app import IdeApp
 from autoflow_ide.issues import IssueSourceError
-from autoflow_ide.model import Issue
+from autoflow_ide.model import Issue, Run
 from autoflow_ide.windows import Window, WindowError
 from test_app import RECORDED_RUNS
 
@@ -346,6 +346,20 @@ async def test_the_whole_address_is_drawn_at_124_columns_with_a_notice_shown():
         assert not any(base in row for row in drawn_rows(t.app))
 
 
+async def test_each_status_row_is_cut_to_one_line():
+    # A long notice is cut with an ellipsis on its own row; it does not wrap and push the next row off screen (#86).
+    t = Harness()
+    async with t.app.run_test(size=(124, 36)) as pilot:
+        await settle(t.app, pilot)
+        base = await browser_on(t.app, pilot)
+        t.app.set_message("start", "a long notice " * 12)
+        await pilot.pause(0.3)
+        rows = [row.rstrip("\n") for row in drawn_rows(t.app)]
+        at = next(n for n, row in enumerate(rows) if f"browser {base}" in row)
+        assert rows[at + 1].startswith("a long notice") and rows[at + 1].rstrip().endswith("…")
+        assert "Issues" in rows[at + 2]                                  # the footer comes next (#86)
+
+
 async def test_each_start_has_a_token_of_its_own():
     t = Harness()
     async with t.app.run_test(size=WIDE) as pilot:
@@ -414,6 +428,20 @@ async def test_without_aiohttp_b_says_what_to_install_and_the_ide_keeps_running(
         await pilot.press("down")
         await settle(t.app, pilot)
         assert t.app.is_running and t.app.current.number == 4
+
+
+async def test_below_python_3_10_b_says_browser_control_needs_it(monkeypatch):
+    # The aiohttp releases for Python 3.9 have known flaws, and the extra installs none there (#86).
+    t = Harness()
+    async with t.app.run_test(size=WIDE) as pilot:
+        await settle(t.app, pilot)
+        monkeypatch.setattr(sys, "version_info", (3, 9, 6, "final", 0))
+        await pilot.press("b")
+        await settle(t.app, pilot)
+        monkeypatch.undo()
+        assert t.app.messages.get("browser") == "browser control needs Python 3.10 or later"
+        assert [c.title for c in t.app.get_system_commands(t.app.screen) if c.title.startswith("Browser")] == [
+            "Browser control: start"]
 
 
 def test_the_ide_imports_without_aiohttp():
@@ -1047,20 +1075,30 @@ async def test_one_view_per_page_and_closing_it_stops_its_reads():
 
 def built_rows(app):
     """The terminal's issue rows before its table cuts them to its column width, read again from the IDE's state
-    with the functions the table is built from (one repository), not from what the page is sent (#86)."""
-    from autoflow_ide.app import SESSION_INDENT, issue_title
+    with the functions the table is built from (one repository), not from what the page is sent. A session's label
+    is cut in the middle to the room the table gives it, as the terminal builds that row (#86)."""
+    from rich.cells import cell_len
+    from autoflow_ide.app import ISSUE_COLUMNS, SESSION_INDENT, cut_middle, issue_title
+    from autoflow_ide.tables import flex_width
+    table = app.query_one("#issues", DataTable)
+    room = flex_width(table.size.width, ISSUE_COLUMNS, table.cell_padding) - cell_len(SESSION_INDENT)
     rows = []
     for issue in app.ordered():
         rows.append((app.row_key(issue), [str(app.mark(issue)), str(issue.number), issue_title(issue)]))
         sessions = app.sessions(issue)
         if len(sessions) > 1:
             for session, key in zip(sessions, app.session_keys(issue, sessions)):
-                rows.append((key, [str(app.session_mark(session)), "", SESSION_INDENT + app.session_label(session)]))
+                label = SESSION_INDENT + cut_middle(app.session_label(session), room)
+                rows.append((key, [str(app.session_mark(session)), "", label]))
     return rows
 
 
 async def test_the_page_gets_the_terminals_rows_at_each_read():
-    t = Harness(windows=PaneWindows({4: [Window("@4", "autoflow-sandbox#4", ["%7"])]}), window_check_sec=0.1)
+    # Issue 4 has two sessions: a run with a name too long for the pane, in %7, and a window of its own, %8 (#86).
+    long_run = Run("autoflow-sandbox-4-2026-11-21-120000-aaaaaaaa", issue="4", coordination="%7")
+    t = Harness(windows=PaneWindows({4: [Window("@4", "autoflow-sandbox#4", ["%7"]),
+                                         Window("@5", "autoflow-sandbox#4", ["%8"])]}),
+                runs=list(RECORDED_RUNS) + [long_run], window_check_sec=0.1)
     async with t.app.run_test(size=WIDE) as pilot:
         await settle(t.app, pilot)
         base = await browser_on(t.app, pilot)
