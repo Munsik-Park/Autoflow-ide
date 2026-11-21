@@ -317,6 +317,35 @@ async def test_b_starts_the_server_and_its_address_stays_on_the_status_line_unti
                 await http.get(base)
 
 
+def drawn_rows(app):
+    """The screen as drawn, a string per row, from Textual's own screenshot (#86)."""
+    import html
+    rows = {}
+    for y, text in re.findall(r'<text[^>]*\by="([0-9.]+)"[^>]*>([^<]*)</text>', app.export_screenshot()):
+        rows.setdefault(float(y), []).append(html.unescape(text).replace("\xa0", " "))
+    return ["".join(parts) for _, parts in sorted(rows.items())]
+
+
+async def test_the_whole_address_is_drawn_at_124_columns_with_a_notice_shown():
+    # The operator's terminal is 124 columns wide: the address must be readable there in full, also while a
+    # notice is on the status line (#86).
+    t = Harness()
+    async with t.app.run_test(size=(124, 36)) as pilot:
+        await settle(t.app, pilot)
+        base = await browser_on(t.app, pilot)
+        await highlight(t.app, pilot, "3")
+        await pilot.press("s")                                   # a notice: #3 already has a run
+        await settle(t.app, pilot)
+        notice = t.app.messages["start"]
+        assert notice == "#3 already has a run: autoflow-sandbox-3-sample"
+        rows = drawn_rows(t.app)
+        assert any(f"browser {base}" in row for row in rows), rows
+        assert any(notice in row for row in rows), rows
+        await pilot.press("b")
+        await settle(t.app, pilot)
+        assert not any(base in row for row in drawn_rows(t.app))
+
+
 async def test_each_start_has_a_token_of_its_own():
     t = Harness()
     async with t.app.run_test(size=WIDE) as pilot:
@@ -729,7 +758,7 @@ async def test_a_browser_start_opens_detached_and_moves_neither_the_terminals_cu
             await settle(t.app, pilot)
             assert t.starts == [((REPO, 4, "focus on tests"), {"detached": True})]
             assert (t.app.current, t.app.current_session, t.app.identity) == before and cursor_key(t.app) == "3"
-            assert session_panes(t.app, 4) == ["%7"]                          # it shows in both (K2) (#86)
+            assert session_panes(t.app, 4) == ["%7"]                          # it shows in both (#86)
             assert await chosen_session(t.app, pilot, page, "4") == "%7"
             assert page.texts()[-1] == "#4: coordination session in %7"
             assert not t.app.messages.get("start")
@@ -1017,9 +1046,17 @@ async def test_one_view_per_page_and_closing_it_stops_its_reads():
 # The state the terminal shows, at the same read (#86)
 
 def built_rows(app):
-    """The terminal's issue rows before its table cuts them to its column width: the rows and values it draws
-    from (#86)."""
-    return [(key, list(cells)) for key, cells in app.issue_rows]
+    """The terminal's issue rows before its table cuts them to its column width, read again from the IDE's state
+    with the functions the table is built from (one repository), not from what the page is sent (#86)."""
+    from autoflow_ide.app import SESSION_INDENT, issue_title
+    rows = []
+    for issue in app.ordered():
+        rows.append((app.row_key(issue), [str(app.mark(issue)), str(issue.number), issue_title(issue)]))
+        sessions = app.sessions(issue)
+        if len(sessions) > 1:
+            for session, key in zip(sessions, app.session_keys(issue, sessions)):
+                rows.append((key, [str(app.session_mark(session)), "", SESSION_INDENT + app.session_label(session)]))
+    return rows
 
 
 async def test_the_page_gets_the_terminals_rows_at_each_read():
@@ -1153,7 +1190,8 @@ async def test_a_pane_id_that_is_not_a_uuid_is_said_as_text(tmp_path, monkeypatc
             assert records["files"] == []
 
 
-async def test_the_records_of_a_gone_pane_say_it_is_gone_and_drop_it(tmp_path, monkeypatch):
+async def test_the_records_of_a_gone_pane_say_it_is_gone_and_a_go_to_drops_it(tmp_path, monkeypatch):
+    # A GET changes no state: the records only say the pane is gone, and a POST go-to drops it (#86).
     t, folder = coordination_harness(tmp_path, monkeypatch, sid=None)
     t.windows.open = {}
     async with t.app.run_test(size=WIDE) as pilot:
@@ -1167,7 +1205,11 @@ async def test_the_records_of_a_gone_pane_say_it_is_gone_and_drop_it(tmp_path, m
             t.windows.gone.add("%7")
             records = await page.get("records", row="4")
             await settle(t.app, pilot)
-            assert records == {"error": "#4: %7: can't find pane: %7; press s to open it again"}
+            assert records == {"error": "#4: %7: can't find pane: %7"}
+            assert session_panes(t.app, 4) == ["%7"]
+            await page.act("go", row="4")
+            await settle(t.app, pilot)
+            assert page.texts()[-1] == "#4: %7: can't find pane: %7; press s to open it again"
             assert session_panes(t.app, 4) == []
 
 
@@ -1213,6 +1255,27 @@ async def test_a_message_to_an_empty_input_area_is_pasted_and_submitted():
             await settle(t.app, pilot)
             assert t.windows.writes == [("paste", "%7", "look at the second step"), ("send-keys", "%7", "Enter")]
             assert not t.app.messages.get("start") and not t.app.messages.get("focus")
+
+
+async def test_a_message_reaches_the_pane_without_its_control_characters():
+    # A CR would submit early, Ctrl-C interrupt and ESC cancel, before the input area is checked (#86).
+    t = input_harness()
+    sent = "look\rat\x03 the\x1b[201~ second\tstep\nnow\x7f\x85!"
+    entered = "look at the[201~ second step now !"
+    t.windows.texts["%7"] = [TURN_END, drafted(TURN_END, entered)]
+    async with t.app.run_test(size=WIDE) as pilot:
+        await settle(t.app, pilot)
+        base = await browser_on(t.app, pilot)
+        async with Page(base) as page:
+            await page.act("message", row="4", text=sent)
+            await settle(t.app, pilot)
+            assert t.windows.writes == [("paste", "%7", entered), ("send-keys", "%7", "Enter")]
+            pasted = t.windows.writes[0][2]
+            assert all(c.isprintable() for c in pasted)
+            t.windows.writes.clear()
+            await page.act("message", row="4", text="\x03\x1b\r\n ")
+            await settle(t.app, pilot)
+            assert t.windows.writes == [] and page.texts()[-1] == "#4: nothing to enter"
 
 
 async def test_prompt_keys_reach_only_a_screen_that_shows_a_prompt():
