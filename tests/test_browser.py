@@ -69,8 +69,9 @@ def drafted(screen, text):
 
 class PaneWindows:
     """TmuxWindows as the IDE uses it, without tmux: the coordination session windows by issue, and each pane's
-    reads (#86). A pane in `gone` fails every read as tmux does (`can't find pane: %N`), except its option, which
-    reads empty; the others give `frames`, `texts` (capture-pane -p, in turn, then the last), `ids` and `modes`."""
+    reads (#86). A pane in `gone` fails every read as tmux does (`can't find pane: %N`), except display-message's,
+    which print an empty line there: its option reads empty and its mode not known (None); the others give `frames`,
+    `texts` (capture-pane -p, in turn, then the last), `ids` and `modes`."""
 
     def __init__(self, windows=None):
         self.open = {n: list(ws) for n, ws in (windows or {}).items()}
@@ -106,7 +107,7 @@ class PaneWindows:
         self.reads.append((what, pane))
         if pane in self.broken:
             raise self.broken[pane]
-        if pane in self.gone and what != "session_id":
+        if pane in self.gone and what not in ("session_id", "in_mode"):
             raise WindowError(f"can't find pane: {pane}")
 
     async def frame(self, pane):
@@ -126,7 +127,7 @@ class PaneWindows:
 
     async def in_mode(self, pane):
         self.read("in_mode", pane)
-        return self.modes.get(pane, False)
+        return None if pane in self.gone else self.modes.get(pane, False)
 
     async def paste(self, pane, text):
         self.writes.append(("paste", pane, text))
@@ -1432,3 +1433,85 @@ async def test_two_overlapping_messages_to_one_pane_are_entered_one_at_a_time():
                 len(t.windows.submitted) == 1 and any("not empty" in text for text in page.texts() + other.texts()))
             assert all(m in ("alpha", "beta") for m in t.windows.submitted)
             assert page.of("message-done") and other.of("message-done")
+
+
+# A seen pane that is gone, Close during a go-to, and stop during a message (#86)
+
+@pytest.mark.parametrize("other, row", [(True, "4/%7"), (False, "4")], ids=["session row", "issue row"])
+async def test_going_to_a_seen_pane_that_is_gone_says_the_pane_is_gone(other, row):
+    # A window check saw the started pane in its window; then the window is gone. The go-to's own read of the
+    # windows drops the pane, and the page is told the pane is gone, as the terminal says it (#86).
+    t = Harness()
+    async with t.app.run_test(size=WIDE) as pilot:
+        await settle(t.app, pilot)
+        base = await browser_on(t.app, pilot)
+        async with Page(base) as page:
+            await page.act("start", row="4")
+            await settle(t.app, pilot)
+            await page.act("instructions", repository=REPO, number=4, opener="s", text="")
+            await settle(t.app, pilot)
+            kept = [Window("@9", "autoflow-sandbox#4", ["%9"])] if other else []
+            t.windows.open = {4: [Window("@7", "autoflow-sandbox#4", ["%7"])] + kept}
+            await t.app.check_windows_once()
+            await settle(t.app, pilot)
+            assert "%7" in t.app.opened_seen and row in table_keys(t.app)
+            t.windows.open, t.windows.gone = {4: kept}, {"%7"}
+            await page.act("go", row=row)
+            await settle(t.app, pilot)
+            assert page.texts()[-1] == "#4: %7: can't find pane: %7; press s to open it again"
+            assert "%7" not in t.app.started.get((REPO, 4), [])
+            assert not page.of("view") and not page.of("frame") and t.focused == []
+
+
+async def test_a_go_to_still_reading_the_windows_opens_no_view_after_close():
+    t = Harness(windows=PaneWindows({4: [Window("@4", "autoflow-sandbox#4", ["%7"])]}))
+    async with t.app.run_test(size=WIDE) as pilot:
+        await settle(t.app, pilot)
+        base = await browser_on(t.app, pilot)
+        async with Page(base) as page:
+            t.windows.find_delay = 0.5
+            await page.act("go", row="4")
+            await pilot.pause(0.1)
+            await page.act("close-view")
+            await settle(t.app, pilot)
+            await pilot.pause(0.7)
+            assert not page.of("view") and not page.of("frame") and not t.windows.frame_reads()
+            assert not [w for w in t.app.workers if str(w.group).startswith("browser-view") and w.is_running]
+            await page.act("go", row="4")                                 # one asked after the Close opens (#86)
+            await pilot.pause(0.1)
+            await page.act("close-view")
+            await page.act("go", row="4")
+            await settle(t.app, pilot)
+            await pilot.pause(0.3)
+            assert len(page.of("view")) == 1 and page.of("frame")
+            assert {m["view"] for m in page.of("frame")} == {page.of("view")[0]["view"]}
+
+
+class PastingPane(PaneWindows):
+    """PaneWindows that tells the test when a paste is made (#86)."""
+
+    def __init__(self, windows):
+        super().__init__(windows)
+        self.pasted = asyncio.Event()
+
+    async def paste(self, pane, text):
+        await super().paste(pane, text)
+        self.pasted.set()
+
+
+async def test_stop_between_paste_and_enter_leaves_no_unsubmitted_text():
+    # The stop comes while the message waits for the input area to show its text: the message is submitted (or
+    # cleaned up) before browser control stops; a message not yet begun enters nothing (#86).
+    t = Harness(windows=PastingPane({4: [Window("@4", "autoflow-sandbox#4", ["%7"])]}))
+    t.windows.texts["%7"] = [TURN_END, drafted(TURN_END, "alpha")]
+    async with t.app.run_test(size=WIDE) as pilot:
+        await settle(t.app, pilot)
+        base = await browser_on(t.app, pilot)
+        async with Page(base) as page:
+            await page.act("message", row="4", text="alpha")
+            await asyncio.wait_for(t.windows.pasted.wait(), 5)
+            await page.act("message", row="4", text="beta")
+            await pilot.press("b")
+            await settle(t.app, pilot)
+            assert t.app.browser is None
+            assert t.windows.writes == [("paste", "%7", "alpha"), ("send-keys", "%7", "Enter")]

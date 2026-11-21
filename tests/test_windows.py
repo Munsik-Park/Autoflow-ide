@@ -324,3 +324,33 @@ async def test_no_prompt_key_in_copy_mode_or_without_a_prompt(tmp_path, monkeypa
     with pytest.raises(InputRefused):
         await answer_prompt(TmuxWindows(), "%7", "1")
     assert not any(c.startswith("send-keys") for c in log.read_text().splitlines())
+
+
+def gone_pane_tmux(tmp_path, monkeypatch):
+    """A tmux on PATH for a pane that is gone, as tmux 3.8 answers: display-message prints an empty line and exits 0;
+    every other command fails with `can't find pane: %7` (#86)."""
+    log = tmp_path / "calls"
+    script = (f'#!/bin/sh\necho "$@" >> "{log}"\n'
+              'case "$1" in\n'
+              '  display-message) echo;;\n'
+              '  *) echo "can\'t find pane: %7" >&2; exit 1;;\n'
+              'esac\n')
+    tmux = tmp_path / "tmux"
+    tmux.write_text(script)
+    tmux.chmod(tmux.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("TMUX", "/tmp/tmux-test,1,0")
+    return log
+
+
+@pytest.mark.parametrize("action", ["message", "key"])
+async def test_input_to_a_pane_that_is_gone_says_it_is_gone_not_in_copy_mode(tmp_path, monkeypatch, action):
+    from autoflow_ide.inputs import answer_prompt, enter_message
+    log = gone_pane_tmux(tmp_path, monkeypatch)
+    assert await TmuxWindows().in_mode("%7") is None
+    with pytest.raises(WindowError, match="^can't find pane: %7$"):
+        if action == "message":
+            await enter_message(TmuxWindows(), "%7", "hello")
+        else:
+            await answer_prompt(TmuxWindows(), "%7", "1")
+    assert not any(c.split()[0] in ("load-buffer", "paste-buffer", "send-keys") for c in log.read_text().splitlines())

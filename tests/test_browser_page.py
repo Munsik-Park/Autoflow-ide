@@ -452,3 +452,63 @@ async def test_a_frame_delivered_after_close_draws_nothing():
             assert await page.text_content("#view-name") == ""
             await page.click("#go")                                       # a view opened again draws (#86)
             await page.wait_for_selector("#view .xterm-rows")
+
+
+# One instructions box per issue of each repository (#86)
+
+class ReadByWorkspace(PaneWindows):
+    """PaneWindows whose read of one workspace's windows takes `delays[workspace]` seconds (#86)."""
+
+    def __init__(self, delays):
+        super().__init__()
+        self.delays = delays
+
+    async def find(self, workspace):
+        await asyncio.sleep(self.delays.get(workspace, 0))
+        return await super().find(workspace)
+
+
+async def test_a_late_box_of_the_same_number_in_another_repository_does_not_replace_the_chosen_one():
+    # Every workspace: Start on autoflow-coordinator#4, then on autoflow-sandbox#4; the first one's window read ends
+    # last. Its box does not replace the second's, and Enter starts only the issue chosen last (#86).
+    from test_app import every_app
+    windows = ReadByWorkspace({"autoflow-coordinator": 1.0})
+    starts = []
+
+    async def loader(repository, limit):
+        return [Issue(4, "four")] if repository != "Munsik-Park/gone" else []
+
+    async def starter(coordinator, repository, number, instructions="", **options):
+        starts.append(((repository, number, instructions), options))
+        return "%7"
+
+    async def focuser(surface):
+        pass
+
+    async def places():
+        return {}
+
+    app = every_app(loader=loader, starter=starter, focuser=focuser, windows=windows, placer=places,
+                    run_refresh_sec=1000, issue_refresh_sec=1000, window_check_sec=1000)
+    first, second = "Munsik-Park/autoflow-coordinator#4", "Munsik-Park/autoflow-sandbox#4"
+    async with app.run_test(size=WIDE) as pilot:
+        await settle(app, pilot)
+        base = await browser_on(app, pilot)
+        async with Chromium() as page:
+            await page.goto(base)
+            await until(lambda: rows_of(page, f'#issues [data-row="{second}"]'))
+            await page.click(f'#issues [data-row="{first}"]')
+            await page.click("#start")
+            await page.click(f'#issues [data-row="{second}"]')
+            await page.click("#start")
+            await page.wait_for_selector("#instructions-text", state="visible")
+            assert await page.text_content("#instructions-title") == "Instructions for autoflow-sandbox#4 (s)"
+            await until(lambda: page.evaluate(
+                "() => document.querySelector('#messages').textContent.includes("
+                "'autoflow-coordinator#4: the instructions box is not opened, a later start was asked')"))
+            assert await page.text_content("#instructions-title") == "Instructions for autoflow-sandbox#4 (s)"
+            await page.fill("#instructions-text", "the second")
+            await page.press("#instructions-text", "Enter")
+            await until(lambda: asyncio.sleep(0, result=bool(starts)))
+            await settle(app, pilot)
+            assert starts == [(("Munsik-Park/autoflow-sandbox", 4, "the second"), {"detached": True})]
