@@ -14,6 +14,8 @@
   let latestStart = null;     // the issue of this page's latest start, whose box may open (#86)
   let box = null;
   let term = null;
+  let view = null;            // the number of the view open on this page; frames of any other are not drawn (#86)
+  let sending = false;        // a message is being entered: Send waits for the server's message-done (#86)
   let stopped = false;
 
   function el(tag, text, cls) {
@@ -29,8 +31,9 @@
     $("messages").scrollTop = $("messages").scrollHeight;
   }
 
+  // Whether the server took the action (#86).
   async function act(action, body) {
-    if (!pageId || stopped) return;
+    if (!pageId || stopped) return false;
     try {
       const response = await fetch(base + "action", {
         method: "POST",
@@ -38,9 +41,22 @@
         body: JSON.stringify(Object.assign({ page: pageId, action: action }, body || {})),
       });
       if (!response.ok) say(action + ": refused by the server (" + response.status + ")");
+      return response.ok;
     } catch (e) {
       say(action + ": the server cannot be reached");
+      return false;
     }
+  }
+
+  function setSending(on) {
+    sending = on;
+    $("message-send").disabled = on;
+  }
+
+  async function sendMessage() {
+    if (sending || !target || target.run) return;
+    setSending(true);
+    if (!(await act("message", { row: target.row, text: $("message-text").value }))) setSending(false);
   }
 
   function fillRows(container, list, attr, chosen, onClick) {
@@ -146,6 +162,7 @@
   }
 
   function closeView() {
+    view = null;
     act("close-view");
     if (term) {
       term.dispose();
@@ -245,8 +262,12 @@
         say(message.text);
       } else if (message.type === "instructions") {
         openBox(message);
+      } else if (message.type === "view") {
+        view = message.view;
       } else if (message.type === "frame") {
-        draw(message);
+        if (message.view === view) draw(message);
+      } else if (message.type === "message-done") {
+        setSending(false);
       } else if (message.type === "stopped") {
         serverStopped();
       }
@@ -271,9 +292,7 @@
   });
   $("records-open").addEventListener("click", openRecords);
   $("view-close").addEventListener("click", closeView);
-  $("message-send").addEventListener("click", () => {
-    if (target && !target.run) act("message", { row: target.row, text: $("message-text").value });
-  });
+  $("message-send").addEventListener("click", sendMessage);
   $("instructions-text").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && box) {
       act("instructions", { repository: box.repository, number: box.number, opener: box.opener,

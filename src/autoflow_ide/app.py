@@ -1136,9 +1136,22 @@ class IdeApp(App):
 
     async def read_windows_of(self, key: IssueKey) -> Tuple[Optional[str], List[Window]]:
         """The windows of issue `key`, read now and shown; kept as last found when they cannot be read. Returns
-        why they were not read and the windows: None and the windows read; NO_WORKSPACE when the coordinator names
-        no workspace for the repository (no window can be opened for it either: the starter, which looks for the
-        workspace again, says why), with the windows last found; or else why tmux could not list them (#85)."""
+        what find_windows_of returns (#85)."""
+        why, found = await self.find_windows_of(key)
+        if why is not None:
+            return why, found
+        before = self.sessions_shape()
+        self.set_windows(key, found)
+        if self.sessions_shape() != before:
+            self.render_issues()
+            self.show_issue(self.current_in())
+        return None, found
+
+    async def find_windows_of(self, key: IssueKey) -> Tuple[Optional[str], List[Window]]:
+        """The windows of issue `key`, read now and neither kept nor shown. Returns why they were not read and the
+        windows: None and the windows read; NO_WORKSPACE when the coordinator names no workspace for the
+        repository (no window can be opened for it either: the starter, which looks for the workspace again, says
+        why), with the windows last found; or else why tmux could not list them (#85, #86)."""
         last = list(self.windows_found.get(key, []))
         try:
             group = self.group_of(key[0])
@@ -1156,11 +1169,6 @@ class IdeApp(App):
             found = (await self.windows.find(workspace)).get(key[1], [])
         except WindowError as e:
             return str(e) or "tmux failed", last
-        before = self.sessions_shape()
-        self.set_windows(key, found)
-        if self.sessions_shape() != before:
-            self.render_issues()
-            self.show_issue(self.current_in())
         return None, found
 
     def set_windows(self, key: IssueKey, windows: List[Window]) -> None:
@@ -1846,16 +1854,17 @@ class IdeApp(App):
         return {"key": row, "info": [list(line) for line in self.info_for(issue, session, group)],
                 "steps": step_cells(run), "sessions": session_cells(run), "run": run.name if run else None}
 
-    def coordination_target(self, row: str) -> Tuple[Optional[IssueKey], Optional[str], Optional[str]]:
+    def coordination_target(self, row: str, windows: Optional[List[Window]] = None
+                            ) -> Tuple[Optional[IssueKey], Optional[str], Optional[str]]:
         """The issue and coordination pane the row `row` names, or why it names none: a session's row, or the row
-        of an issue with one session (#86)."""
+        of an issue with one session, its sessions from `windows` when given, else from the last ones found (#86)."""
         target = self.row_targets.get(row)
         if target is None:
             return None, None, f"{row}: not a row of the issues"
         issue, session = target
         key = issue_key(issue)
         if session is None:
-            sessions = self.sessions(issue)
+            sessions = self.sessions(issue, windows)
             if not sessions:
                 return key, None, f"{self.label(key)} has no session"
             if len(sessions) > 1:

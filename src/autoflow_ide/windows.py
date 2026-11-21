@@ -7,6 +7,7 @@ remembered, so the ones opened before the IDE restarted are found too.
 import asyncio
 import os
 import re
+import secrets
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -105,10 +106,18 @@ class TmuxWindows:
 
     async def paste(self, pane: str, text: str) -> None:
         """Enter `text` in `pane` as the coordinator's submit does: paste-buffer -r, so a line feed does not submit
-        its line, and not -p, so the text is not pasted material (#86)."""
-        buffer = "autoflow-ide-" + pane.lstrip("%")
+        its line, and not -p, so the text is not pasted material. Each paste has a buffer of its own, deleted once
+        pasted or when the paste fails (#86)."""
+        buffer = f"autoflow-ide-{pane.lstrip('%')}-{secrets.token_hex(4)}"
         await tmux("load-buffer", "-b", buffer, "-", stdin=text.strip("\n"))
-        await tmux("paste-buffer", "-r", "-d", "-b", buffer, "-t", pane)
+        try:
+            await tmux("paste-buffer", "-r", "-d", "-b", buffer, "-t", pane)
+        except WindowError:
+            try:
+                await tmux("delete-buffer", "-b", buffer)
+            except WindowError:
+                pass  # already gone (#86)
+            raise
 
     async def send_keys(self, pane: str, *keys: str) -> None:
         await tmux("send-keys", "-t", pane, *keys)
