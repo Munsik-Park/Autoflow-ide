@@ -1,12 +1,14 @@
 """The IDE screen: issues, the selected issue's run, and its sessions."""
 import argparse
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Optional, Set, Tuple, Union
 
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Horizontal, Vertical
+from textual.binding import Binding
 from textual.css.query import NoMatches
 from rich.cells import cell_len
 from rich.text import Text
@@ -49,6 +51,8 @@ IssueKey = Tuple[str, int]
 # What read_windows_of returns when the coordinator names no workspace for the issue's repository (#85).
 NO_WORKSPACE = "no workspace"
 RUN_REFRESH_SEC = 5.0
+# Browser control runs on this Python or later, the oldest aiohttp >= 3.14.5 supports (#86).
+BROWSER_PYTHON = (3, 10)
 # The open issues are also read again on this interval, so an issue a merge closed leaves the list without a
 # key press (about 60 gh calls an hour), and when a step changes (see show_runs).
 ISSUE_REFRESH_SEC = 60.0
@@ -136,6 +140,8 @@ class IdeApp(App):
         ("w", "add_workspace", "Workspace"),
         ("escape", "close_find", "Clear"),
         ("q", "quit", "Quit"),
+        # Not shown, so every key in the footer still fits at 124 columns; the command palette has it too (#86).
+        Binding("b", "toggle_browser", "Browser", show=False),
     ]
 
     def __init__(self, issues: Optional[List[Issue]] = None, repository: Optional[str] = None,
@@ -148,7 +154,8 @@ class IdeApp(App):
                  workspace_reader: Optional[WorkspaceReader] = None, placer: Optional[Placer] = None,
                  version: Optional[str] = None, workspaces_reader: Optional[WorkspacesReader] = None,
                  state_file: Optional[Path] = None, notice_sec: float = NOTICE_SEC,
-                 base_reader: Optional[BaseReader] = None, workspace_creator: Optional[WorkspaceCreator] = None):
+                 base_reader: Optional[BaseReader] = None, workspace_creator: Optional[WorkspaceCreator] = None,
+                 browser_port: int = 0):
         """With `issues`, show them as given. Otherwise load the open issues of `repository` with `loader`,
         again every `issue_refresh_sec` seconds; without `repository` but with `coordinator`, the most recent
         open issues of every workspace of the coordinator's base (`workspaces_reader`), under a row per workspace.
@@ -161,7 +168,8 @@ class IdeApp(App):
         `version`, the IDE's own (see version.py), is shown in the bottom-right corner.
         `state_file` keeps the workspaces chosen recently, which open unfolded with those that have a run.
         `base_reader` reads the coordinator's base and where it was set, again whenever the issues are read.
-        `workspace_creator` opens a coordination session that makes a workspace for a repository (`w`)."""
+        `workspace_creator` opens a coordination session that makes a workspace for a repository (`w`).
+        `browser_port` is the localhost port browser control listens on (`b`), 0 for one the system picks (#86)."""
         super().__init__()
         self.version = version
         self.static = issues is not None
@@ -269,6 +277,14 @@ class IdeApp(App):
         self.notice_sec = notice_sec
         # The timer that clears each notice slot.
         self.notice_timers: Dict[str, Timer] = {}
+        # The issues table's rows as last built, by key (#86).
+        self.issue_rows: List[Tuple[Optional[str], List[str]]] = []
+        # Browser control (#86): the server while it runs, and whether it is being started or stopped.
+        self.browser_port = browser_port
+        self.browser = None
+        self.browser_busy = False
+        # Where the terminal's start and go-to messages go: its own status line (#86).
+        self.terminal = TerminalReporter(self)
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="panes"):
@@ -509,20 +525,28 @@ class IdeApp(App):
     def current_run(self) -> Optional[Run]:
         """The run the highlighted row shows: its session's, or an issue's with one session; none on the row of an
         issue with several sessions."""
-        if self.current is None:
+        return self.run_of(self.current, self.current_session)
+
+    def run_of(self, issue: Optional[Issue], session: Optional[CoordinationSession]) -> Optional[Run]:
+        """The run the row of `issue` (and `session`, on a session's row) shows, for the terminal or a page (#86)."""
+        if issue is None:
             return None
-        if self.current_session is not None:
-            return self.current_session.run
-        sessions = self.sessions(self.current)
+        if session is not None:
+            return session.run
+        sessions = self.sessions(issue)
         if len(sessions) > 1:
             return None
-        return sessions[0].run if sessions else self.current.run
+        return sessions[0].run if sessions else issue.run
 
     def parent_sessions(self) -> int:
         """The number of sessions of the highlighted issue when its own row, with several, is highlighted."""
-        if self.current is None or self.current_session is not None:
+        return self.several_of(self.current, self.current_session)
+
+    def several_of(self, issue: Optional[Issue], session: Optional[CoordinationSession]) -> int:
+        """The number of sessions of `issue` when its own row, with several, is the row shown (#86)."""
+        if issue is None or session is not None:
             return 0
-        count = len(self.sessions(self.current))
+        count = len(self.sessions(issue))
         return count if count > 1 else 0
 
     def find_issue(self, key: IssueKey) -> Optional[Issue]:
@@ -571,6 +595,8 @@ class IdeApp(App):
                                  else [self.session_mark(session), "", label]))
         fill(table, columns, rows)
         self.row_targets = targets
+        # As built, before the table cuts them to its width: a page has its own width (#86).
+        self.issue_rows = [(key, [str(c) for c in cells]) for key, cells in rows]
         # With only running issues shown and none to show, the empty pane says why.
         none = self.running_only and not any(self.shown(g) for g in self.groups)
         if none or self.messages.get("running"):
@@ -591,6 +617,7 @@ class IdeApp(App):
                     table.move_cursor(row=table.get_row_index(header))
                     break
         self.placed = self.cursor_key(table)
+        self.browser_changed()
 
     def action_refresh_issues(self) -> None:
         if self.static:
@@ -910,17 +937,19 @@ class IdeApp(App):
         except NoMatches:
             pass  # the app is closing: its widgets are gone
 
-    # Starting a run
+    # Starting a run. Each check says why it refuses through the reporter of the side that asked: the terminal's
+    # status line, or the asking browser page (#86).
 
-    def can_start(self, issue: Issue) -> bool:
-        """Whether a coordination session can be opened for `issue`; says why not on the status line."""
+    def can_start(self, issue: Issue, reporter: Optional["Reporter"] = None) -> bool:
+        """Whether a coordination session can be opened for `issue`; says why not."""
+        reporter = reporter or self.terminal
         key = issue_key(issue)
         if self.static or not self.coordinator or not issue.repository:
-            self.set_message("start", "start: needs --coordinator and --repo or --workspace")
+            reporter.say("start", "start: needs --coordinator and --repo or --workspace")
         elif issue.pull:
-            self.set_message("start", f"{self.label(key)} is a pull request")
+            reporter.say("start", f"{self.label(key)} is a pull request")
         elif issue.closed:
-            self.set_message("start", f"{self.label(key)} is closed")
+            reporter.say("start", f"{self.label(key)} is closed")
         else:
             return True
         return False
@@ -941,144 +970,189 @@ class IdeApp(App):
         else:
             self.run_worker(self.start_or_go_back(key), group="start-focus", exclusive=True)
 
+    async def browser_start(self, row: str, reporter: "Reporter") -> None:
+        """`s` from a browser page, on the row `row` it chose: the steps of action_start_run, in its order, told to
+        that page; run in the worker group `browser`, beside the terminal's (#86)."""
+        target = self.row_targets.get(row)
+        if target is None:
+            reporter.say("start", f"{row}: not a row of the issues")
+            return
+        issue, session = target
+        key = issue_key(issue)
+        if session is not None:
+            await self.go_back(key, session, reporter)
+        elif self.can_start(issue, reporter) and not self.open_in_progress(key, reporter):
+            await self.start_or_go_back(key, reporter)
+
     def action_new_session(self) -> None:
         """`S`: open another coordination session for the issue, whatever sessions or runs it has (#85)."""
         issue = self.current
         if issue is not None and not self.box_taken("start", "S") and self.can_start(issue):
             self.ask_instructions(issue_key(issue), "S")
 
-    async def start_or_go_back(self, key: IssueKey) -> None:
+    def browser_new_session(self, row: str, reporter: "Reporter") -> None:
+        """`S` from a browser page: its own instructions box opens, after action_new_session's checks (#86)."""
+        target = self.row_targets.get(row)
+        if target is None:
+            reporter.say("start", f"{row}: not a row of the issues")
+        elif self.can_start(target[0], reporter):
+            reporter.ask(issue_key(target[0]), "S")
+
+    async def start_or_go_back(self, key: IssueKey, reporter: Optional["Reporter"] = None) -> None:
         """Read the issue's windows again, so one the periodic check has not found yet is gone back to; open the
         instructions box when the issue still has no session; otherwise go back to its one session with no run, or
         say why not (#85)."""
+        reporter = reporter or self.terminal
         why, windows = await self.read_windows_of(key)
-        if self.windows_unread(key, why):
+        if self.windows_unread(key, why, reporter):
             return
         # What `s` checked before the read is checked again, as the issue now is: it may have closed, or an S
         # submitted during the read may be opening a session whose pane is not known yet (#85).
         issue = self.find_issue(key)
-        if not self.still_startable(key, issue) or self.open_in_progress(key):
+        if not self.still_startable(key, issue, reporter) or self.open_in_progress(key, reporter):
             return
         sessions = self.sessions(issue, windows)
         if not sessions:
-            if not self.box_taken("start", "s"):  # a box opened during the read is left as it is (#85)
-                self.ask_instructions(key, "s")
+            reporter.ask(key, "s")
         elif len(sessions) == 1 and not sessions[0].run:
-            await self.go_back(key, sessions[0])
+            await self.go_back(key, sessions[0], reporter)
         else:
-            self.say_sessions(key, sessions)
+            self.say_sessions(key, sessions, reporter)
 
-    def still_startable(self, key: IssueKey, issue: Optional[Issue]) -> bool:
+    def still_startable(self, key: IssueKey, issue: Optional[Issue], reporter: Optional["Reporter"] = None) -> bool:
         """Whether issue `key`, as it is listed now, can still have a coordination session opened; says why not
         (#85)."""
+        reporter = reporter or self.terminal
         if issue is None:
-            self.set_message("start", f"{self.label(key)} is no longer listed")
+            reporter.say("start", f"{self.label(key)} is no longer listed")
             return False
-        return self.can_start(issue)
+        return self.can_start(issue, reporter)
 
-    def open_in_progress(self, key: IssueKey) -> bool:
+    def open_in_progress(self, key: IssueKey, reporter: Optional["Reporter"] = None) -> bool:
         """Whether a coordination session of issue `key` is being opened; says so (#85)."""
         if self.opening.get(key):
-            self.set_message("start", f"{self.label(key)}: opening the coordination session")
+            (reporter or self.terminal).say("start", f"{self.label(key)}: opening the coordination session")
             return True
         return False
 
-    def say_sessions(self, key: IssueKey, sessions: List[CoordinationSession]) -> None:
+    def say_sessions(self, key: IssueKey, sessions: List[CoordinationSession],
+                     reporter: Optional["Reporter"] = None) -> None:
         """Say why `s` opens no session for issue `key`, which has `sessions` (#85)."""
+        reporter = reporter or self.terminal
         if len(sessions) > 1:
-            self.set_message("start", f"{self.label(key)} has {len(sessions)} sessions: highlight one, or S for another")
+            reporter.say("start", f"{self.label(key)} has {len(sessions)} sessions: highlight one, or S for another")
         elif sessions[0].run:
-            self.set_message("start", f"{self.label(key)} already has a run: {sessions[0].run.name}")
+            reporter.say("start", f"{self.label(key)} already has a run: {sessions[0].run.name}")
         else:
-            self.set_message("start", f"{self.label(key)} has a session: s goes to it, or S for another")
+            reporter.say("start", f"{self.label(key)} has a session: s goes to it, or S for another")
 
-    def decide_open(self, key: IssueKey, opener: Optional[str], text: str) -> None:
+    def decide_open(self, key: IssueKey, opener: Optional[str], text: str,
+                    reporter: Optional["Reporter"] = None) -> None:
         """Enter in the instructions box of issue `key`, opened by `opener` (s or S): open its coordination session
         only when the state read now permits it. What can be told at once is checked here; the rest is read again
         in a worker, with the open marked as in progress from now on, so no other start comes between those reads
-        and the open (#85)."""
+        and the open (#85). The box is the terminal's or a browser page's, and `reporter` the side's (#86)."""
+        reporter = reporter or self.terminal
         issue = self.find_issue(key)
-        if not self.still_startable(key, issue) or (opener == "s" and self.open_in_progress(key)):
+        if not self.still_startable(key, issue, reporter) or (opener == "s" and self.open_in_progress(key, reporter)):
             return
         self.opening[key] = self.opening.get(key, 0) + 1
-        self.set_message("start", f"{self.label(key)}: checking before opening the coordination session")
-        self.run_worker(self.open_if_still_startable(key, opener, text), group=f"start-{key[0]}-{key[1]}")
+        reporter.say("start", f"{self.label(key)}: checking before opening the coordination session")
+        self.run_worker(self.open_if_still_startable(key, opener, text, reporter), group=f"start-{key[0]}-{key[1]}")
 
-    async def open_if_still_startable(self, key: IssueKey, opener: Optional[str], text: str) -> None:
+    async def open_if_still_startable(self, key: IssueKey, opener: Optional[str], text: str,
+                                      reporter: Optional["Reporter"] = None) -> None:
         """Open the session decide_open marked as in progress, unless the state read now refuses it; the mark is
         dropped when nothing opens, and by start once the starter returns (#85)."""
+        reporter = reporter or self.terminal
         opens = False
         try:
-            opens = not await self.refuses_at_enter(key, opener)
+            opens = not await self.refuses_at_enter(key, opener, reporter)
         finally:
             if not opens:
                 self.end_open(key)
         if opens:
-            await self.start(key, text)
+            await self.start(key, text, reporter)
 
-    async def refuses_at_enter(self, key: IssueKey, opener: Optional[str]) -> bool:
+    async def refuses_at_enter(self, key: IssueKey, opener: Optional[str],
+                               reporter: Optional["Reporter"] = None) -> bool:
         """Whether a session of issue `key` is refused, from its state read now; says why. It opens only when each
         input is known to permit it: the issue listed, and open and not a pull request as GitHub gives it now; for
         `s`, also its windows and the runs read again, no other open in progress and no session. One that cannot be
         read refuses (#85)."""
+        reporter = reporter or self.terminal
         label = self.label(key)
         issue = self.find_issue(key)
-        if not self.still_startable(key, issue):
+        if not self.still_startable(key, issue, reporter):
             return True
         # Read every time: a row shows "open" until the next read of the list, which can be after it closed (#85).
         try:
             found = await self.lookup(*key)
         except IssueSourceError as e:
-            self.set_message("start", f"{label}: nothing opened: its state could not be read: {e}")
+            reporter.say("start", f"{label}: nothing opened: its state could not be read: {e}")
             return True
         if key in self.lookups:
             self.lookups[key] = found
             self.show_issues()
         if found.pull:
-            self.set_message("start", f"{label} is a pull request")
+            reporter.say("start", f"{label} is a pull request")
             return True
         if found.state != "open":
-            self.set_message("start", f"{label} is {found.state or 'of unknown state'}")
+            reporter.say("start", f"{label} is {found.state or 'of unknown state'}")
             return True
         windows: Optional[List[Window]] = None
         runs: Optional[List[Run]] = None
         if opener == "s":
             why, windows = await self.read_windows_of(key)
-            if self.windows_unread(key, why):
+            if self.windows_unread(key, why, reporter):
                 return True
             runs = await self.load_runs()
             if runs is None:
-                self.set_message("start", f"{label}: nothing opened: the runs could not be read")
+                reporter.say("start", f"{label}: nothing opened: the runs could not be read")
                 return True
         # Looked up again after the reads above, which a refresh of the list may have changed meanwhile (#85).
         issue = self.find_issue(key)
-        if not self.still_startable(key, issue):
+        if not self.still_startable(key, issue, reporter):
             return True
         if opener != "s":
             return False
         if self.opening.get(key, 0) > 1:  # an open started during the reads, besides this one (#85)
-            self.set_message("start", f"{label}: opening the coordination session")
+            reporter.say("start", f"{label}: opening the coordination session")
             return True
         # From the windows and runs read above, not the last ones shown: a periodic read that began before them
         # can end during the awaits above and show what was there before (#85).
         sessions = self.sessions(issue, windows, runs)
         if sessions:
-            self.say_sessions(key, sessions)
+            self.say_sessions(key, sessions, reporter)
             return True
         return False
 
-    def windows_unread(self, key: IssueKey, why: Optional[str]) -> bool:
+    def windows_unread(self, key: IssueKey, why: Optional[str], reporter: Optional["Reporter"] = None) -> bool:
         """Whether the read of issue `key`'s windows failed, with `why`; says so (#85)."""
         if why is None or why == NO_WORKSPACE:
             return False
-        self.set_message("start", f"{self.label(key)}: nothing opened: its windows could not be read: {why}")
+        (reporter or self.terminal).say("start", f"{self.label(key)}: nothing opened: its windows could not be read: {why}")
         return True
 
     async def read_windows_of(self, key: IssueKey) -> Tuple[Optional[str], List[Window]]:
         """The windows of issue `key`, read now and shown; kept as last found when they cannot be read. Returns
-        why they were not read and the windows: None and the windows read; NO_WORKSPACE when the coordinator names
-        no workspace for the repository (no window can be opened for it either: the starter, which looks for the
-        workspace again, says why), with the windows last found; or else why tmux could not list them (#85)."""
+        what find_windows_of returns (#85)."""
+        why, found = await self.find_windows_of(key)
+        if why is not None:
+            return why, found
+        before = self.sessions_shape()
+        self.set_windows(key, found)
+        if self.sessions_shape() != before:
+            self.render_issues()
+            self.show_issue(self.current_in())
+        return None, found
+
+    async def find_windows_of(self, key: IssueKey) -> Tuple[Optional[str], List[Window]]:
+        """The windows of issue `key`, read now; the windows are neither kept nor shown, though the repository's
+        workspace is looked up and kept when it is not known yet. Returns why they were not read and the
+        windows: None and the windows read; NO_WORKSPACE when the coordinator names no workspace for the
+        repository (no window can be opened for it either: the starter, which looks for the workspace again, says
+        why), with the windows last found; or else why tmux could not list them (#85, #86)."""
         last = list(self.windows_found.get(key, []))
         try:
             group = self.group_of(key[0])
@@ -1096,11 +1170,6 @@ class IdeApp(App):
             found = (await self.windows.find(workspace)).get(key[1], [])
         except WindowError as e:
             return str(e) or "tmux failed", last
-        before = self.sessions_shape()
-        self.set_windows(key, found)
-        if self.sessions_shape() != before:
-            self.render_issues()
-            self.show_issue(self.current_in())
         return None, found
 
     def set_windows(self, key: IssueKey, windows: List[Window]) -> None:
@@ -1140,19 +1209,24 @@ class IdeApp(App):
         if not self.opening[key]:
             del self.opening[key]
 
-    async def start(self, key: IssueKey, text: str = "") -> None:
+    async def start(self, key: IssueKey, text: str = "", reporter: Optional["Reporter"] = None) -> None:
         """Open a coordination session with the instructions given; decide_open marked it as in progress, so `s`
-        meanwhile opens no second one, and an open is not cancelled by a later one."""
-        self.set_message("start", f"{self.label(key)}: opening the coordination session")
+        meanwhile opens no second one, and an open is not cancelled by a later one. From a browser page, its window
+        opens detached and the terminal's cursor stays where it is (#86)."""
+        reporter = reporter or self.terminal
+        reporter.say("start", f"{self.label(key)}: opening the coordination session")
         try:
-            pane = await self.starter(self.coordinator, *key, text)
+            if reporter.detached:
+                pane = await self.starter(self.coordinator, *key, text, detached=True)
+            else:
+                pane = await self.starter(self.coordinator, *key, text)
         except StartError as e:
-            self.set_message("start", f"start {self.label(key)}: {e}")
+            reporter.say("start", f"start {self.label(key)}: {e}")
             return
         finally:
             self.end_open(key)
         self.started[key] = self.started.get(key, []) + [pane]
-        self.set_message("start", f"{self.label(key)}: coordination session in {pane}")
+        reporter.say("start", f"{self.label(key)}: coordination session in {pane}")
         group = self.group_of(key[0])
         if self.every and group:
             self.remember(group.name, True)
@@ -1160,6 +1234,11 @@ class IdeApp(App):
         if issue is None:
             return
         try:
+            if reporter.detached:
+                # Its row is added; the terminal's cursor stays where it is (#86).
+                self.render_issues()
+                self.show_issue(self.current_in())
+                return
             # Its row is added at once, with the cursor on it.
             self.follow_cursor()
             self.on_header, self.current, self.current_session = None, issue, None
@@ -1169,24 +1248,35 @@ class IdeApp(App):
         except NoMatches:
             pass  # the app is closing: its widgets are gone
 
-    async def go_back(self, key: IssueKey, session: CoordinationSession) -> None:
-        """Move tmux focus to the coordination pane of `session`."""
-        pane = session.run.coordination if session.run and session.run.coordination else session.pane
+    def session_pane(self, session: CoordinationSession) -> Optional[str]:
+        """The coordination pane of `session`: its run's, or the window's pane it was found in (#86)."""
+        return session.run.coordination if session.run and session.run.coordination else session.pane
+
+    async def go_back(self, key: IssueKey, session: CoordinationSession,
+                      reporter: Optional["Reporter"] = None) -> None:
+        """Go to the coordination pane of `session`: tmux focus moves to it for the terminal; a browser page opens
+        its view (#86)."""
+        reporter = reporter or self.terminal
+        pane = self.session_pane(session)
         if not pane:
-            self.set_message("start", f"{self.label(key)}: {session.run.name if session.run else 'session'}: no pane")
+            reporter.say("start", f"{self.label(key)}: {session.run.name if session.run else 'session'}: no pane")
             return
-        try:
-            await self.focuser(pane)
-        except FocusError as e:
-            if pane in self.started.get(key, []):
-                self.set_opened(key, [p for p in self.started[key] if p != pane])
-                self.set_message("start", f"{self.label(key)}: {pane}: {e}; press s to open it again")
+        await reporter.go(key, pane)
+
+    def pane_gone(self, key: IssueKey, pane: str, error: str, reporter: Optional["Reporter"] = None) -> None:
+        """The coordination pane `pane` of issue `key` could not be reached, with `error`: an opened pane is no
+        longer the issue's session, on both sides; say so to the side that went to it (#86)."""
+        reporter = reporter or self.terminal
+        if pane in self.started.get(key, []):
+            self.set_opened(key, [p for p in self.started[key] if p != pane])
+            reporter.say("start", f"{self.label(key)}: {pane}: {error}; press s to open it again")
+            try:
                 self.render_issues()
                 self.show_issue(self.current_in())
-            else:
-                self.set_message("start", f"{self.label(key)}: {pane}: {e}")
-            return
-        self.set_message("start", f"{self.label(key)}: coordination session in {pane}")
+            except NoMatches:
+                pass  # the app is closing: its widgets are gone (#86)
+        else:
+            reporter.say("start", f"{self.label(key)}: {pane}: {error}")
 
     # Adding a workspace: a coordination session makes it, as one starts a run (#60)
 
@@ -1581,11 +1671,9 @@ class IdeApp(App):
         same_run = run is not None and run.name == self.shown_run_name
         self.shown_run_name = run.name if run else None
         run_row, session_row = (run_table.cursor_row, sessions.cursor_row) if same_run else (0, 0)
-        steps = run.steps if run else []
-        fill(run_table, RUN_COLUMNS,
-             ((None, [str(n), s.shown, s.session or "", s.state, s.verdict or ""]) for n, s in enumerate(steps, 1)))
+        fill(run_table, RUN_COLUMNS, ((None, cells) for cells in step_cells(run)))
         fill(sessions, SESSION_COLUMNS,
-             ((s.name, [s.name, s.state]) for s in (run.sessions if run else [])))
+             ((s.name, cells) for s, cells in zip(run.sessions if run else [], session_cells(run))))
         if run_table.row_count:
             run_table.move_cursor(row=min(run_row, run_table.row_count - 1))
         if sessions.row_count:
@@ -1598,18 +1686,24 @@ class IdeApp(App):
 
     def render_info(self) -> None:
         """Whose work the selected issue is and where it happens, above its run."""
-        run = self.current_run()
-        group = self.current_group()
         info = self.query_one("#info", Static)
-        base = self.base or self.base_error
-        pane = self.current_session.pane if self.current_session is not None else None
-        if pane is None and self.current is not None and not self.parent_sessions():
-            sessions = self.sessions(self.current)
-            pane = sessions[0].pane if sessions else None
-        extra = dict(sessions=self.parent_sessions(), pane=pane)
-        lines = (info_lines(group.repository, group.workspace, group.workspace_error, run, self.places, base, **extra)
-                 if group else info_lines(None, None, None, run, self.places, base, **extra))
+        lines = self.info_for(self.current, self.current_session, self.current_group())
         info.update(info_text(lines, info.content_size.width))
+        self.browser_changed()
+
+    def info_for(self, issue: Optional[Issue], session: Optional[CoordinationSession],
+                 group: Optional[Group]) -> List[Tuple[str, str]]:
+        """The info lines of the row of `issue` and `session` in `group`, for the terminal or a page (#86)."""
+        run = self.run_of(issue, session)
+        base = self.base or self.base_error
+        several = self.several_of(issue, session)
+        pane = session.pane if session is not None else None
+        if pane is None and issue is not None and not several:
+            sessions = self.sessions(issue)
+            pane = sessions[0].pane if sessions else None
+        extra = dict(sessions=several, pane=pane)
+        return (info_lines(group.repository, group.workspace, group.workspace_error, run, self.places, base, **extra)
+                if group else info_lines(None, None, None, run, self.places, base, **extra))
 
     def current_group(self) -> Optional[Group]:
         """The group of the highlighted issue or workspace row; the one repository's when there is only it."""
@@ -1646,9 +1740,18 @@ class IdeApp(App):
         parts += [(group.repository if group else self.repository) or ("every workspace" if self.every else "(no repository)"),
                   (f"#{issue.number}" + (f" ({kind})" if kind else "")) if issue else "no issue",
                   f"{several} sessions" if several else run.name if run else "no run"]
-        parts += [m for s, m in self.messages.items() if m and s not in NOTICE_SLOTS]
+        parts += [m for s, m in self.messages.items() if m and s not in NOTICE_SLOTS and s != "browser"]
+        browser = self.messages.get("browser")
         try:
-            self.query_one("#status", Static).update("  |  ".join(parts))
+            status = self.query_one("#status", Static)
+            if browser:
+                # Browser control's address, or why it could not start, on a row of its own above the rest, so a
+                # notice or the rest of the line never pushes it out of a 124-column screen (#86).
+                status.add_class("with-browser")
+                status.update(Text(browser + "\n" + "  |  ".join(parts), no_wrap=True, overflow="ellipsis"))
+            else:
+                status.remove_class("with-browser")
+                status.update("  |  ".join(parts))
         except NoMatches:
             pass  # the app is closing (a timer can fire meanwhile): its widgets are gone
 
@@ -1665,6 +1768,113 @@ class IdeApp(App):
 
     def action_focus_pane(self, pane: str, mode: str = "") -> None:
         self.query_one(f"#{pane}", DataTable).focus()
+
+    # Browser control (#86): a server on localhost, in this process, that shows the screen to a browser page and
+    # acts through the same code as the keys. Its status line slot keeps the address while it runs. (#86)
+
+    def action_toggle_browser(self) -> None:
+        """`b`: start browser control, or stop it."""
+        if not self.browser_busy:
+            self.browser_busy = True
+            self.run_worker(self.toggle_browser(), group="server-control")
+
+    async def toggle_browser(self) -> None:
+        try:
+            if self.browser is not None:
+                await self.stop_browser()
+            else:
+                await self.start_browser()
+        finally:
+            self.browser_busy = False
+
+    async def start_browser(self) -> None:
+        if sys.version_info < BROWSER_PYTHON:
+            # The aiohttp releases for older Pythons have known flaws; the extra installs none there (#86).
+            self.set_message("browser", "browser control needs Python 3.10 or later")
+            return
+        try:
+            from autoflow_ide.browser import BrowserServer  # only browser control needs aiohttp (#86)
+        except ImportError:
+            self.set_message("browser", "browser control needs aiohttp: pip install -e '.[browser]'")
+            return
+        server = BrowserServer(self, self.browser_port)
+        try:
+            await server.start()
+        except OSError as e:
+            self.set_message("browser", f"browser control: {e}")
+            return
+        self.browser = server
+        self.set_message("browser", f"browser {server.url}")
+
+    async def stop_browser(self) -> None:
+        server, self.browser = self.browser, None
+        if server is not None:
+            await server.stop()
+        self.set_message("browser", "")
+
+    async def action_quit(self) -> None:
+        await self.stop_browser()
+        self.exit()
+
+    async def on_unmount(self) -> None:
+        await self.stop_browser()  # also when the IDE ends some other way (#86)
+
+    def get_system_commands(self, screen):
+        yield from super().get_system_commands(screen)
+        if self.browser is not None:
+            yield SystemCommand("Browser control: stop", "Stop the browser page's server (b)", self.action_toggle_browser)
+        else:
+            yield SystemCommand("Browser control: start", "Serve this screen to a browser page on localhost (b)",
+                                self.action_toggle_browser)
+
+    def browser_changed(self) -> None:
+        """The screen changed: the pages get it at the same read (#86)."""
+        if self.browser is not None:
+            self.browser.changed()
+
+    def snapshot(self, chosen: Optional[str] = None) -> dict:
+        """What a page shows: the issues table's rows as the terminal builds them, and for the row the page chose,
+        what the info, run and sessions panes show for it (#86)."""
+        rows = []
+        for key, cells in self.issue_rows:
+            issue = self.row_targets.get(key, (None, None))[0]
+            rows.append({"key": key, "cells": cells, "repository": issue.repository if issue else None,
+                         "number": issue.number if issue else None})
+        return {"issues": rows, "chosen": self.chosen_view(chosen)}
+
+    def chosen_view(self, row: Optional[str]) -> dict:
+        issue, session, group = None, None, None
+        if row is not None and self.every and self.group_of(row):
+            group = self.group_of(row)
+        elif row is not None:
+            issue, session = self.row_targets.get(row, (None, None))
+            group = self.group_of(issue.repository) if issue else None
+        if row is None or (issue is None and group is None):
+            return {"key": row, "info": [], "steps": [], "sessions": [], "run": None}
+        run = self.run_of(issue, session)
+        return {"key": row, "info": [list(line) for line in self.info_for(issue, session, group)],
+                "steps": step_cells(run), "sessions": session_cells(run), "run": run.name if run else None}
+
+    def coordination_target(self, row: str, windows: Optional[List[Window]] = None
+                            ) -> Tuple[Optional[IssueKey], Optional[str], Optional[str]]:
+        """The issue and coordination pane the row `row` names, or why it names none: a session's row, or the row
+        of an issue with one session, its sessions from `windows` when given, else from the last ones found (#86)."""
+        target = self.row_targets.get(row)
+        if target is None:
+            return None, None, f"{row}: not a row of the issues"
+        issue, session = target
+        key = issue_key(issue)
+        if session is None:
+            sessions = self.sessions(issue, windows)
+            if not sessions:
+                return key, None, f"{self.label(key)} has no session"
+            if len(sessions) > 1:
+                return key, None, f"{self.label(key)} has {len(sessions)} sessions: choose one"
+            session = sessions[0]
+        pane = self.session_pane(session)
+        if not pane:
+            return key, None, f"{self.label(key)}: {session.run.name if session.run else 'session'}: no pane"
+        return key, pane, None
 
 
 INFO_LABEL_WIDTH = 10
@@ -1763,6 +1973,55 @@ def issue_kind(issue: Issue) -> str:
     return ("closed PR" if issue.closed else "PR") if issue.pull else ("closed" if issue.closed else "")
 
 
+def step_cells(run: Optional[Run]) -> List[List[str]]:
+    """The run pane's cells of each step of `run` (#86)."""
+    return [[str(n), s.shown, s.session or "", s.state, s.verdict or ""] for n, s in enumerate(run.steps if run else [], 1)]
+
+
+def session_cells(run: Optional[Run]) -> List[List[str]]:
+    """The sessions pane's cells of each work session of `run` (#86)."""
+    return [[s.name, s.state] for s in (run.sessions if run else [])]
+
+
+class Reporter:
+    """Where the start and go-to checks say what they found: the terminal's status line, or one browser page
+    (#86). `detached`: a session opened for it opens without moving tmux or the terminal's cursor."""
+    detached = False
+
+    def say(self, slot: str, text: str) -> None:
+        raise NotImplementedError
+
+    def ask(self, key: IssueKey, opener: str) -> None:
+        """Open this side's instructions box for a new session of issue `key`, asked by `opener` (s or S)."""
+        raise NotImplementedError
+
+    async def go(self, key: IssueKey, pane: str) -> None:
+        """Go to the coordination pane `pane` of issue `key`."""
+        raise NotImplementedError
+
+
+class TerminalReporter(Reporter):
+    """The terminal's side: its status line slots, its box, and tmux focus (#86)."""
+
+    def __init__(self, app: "IdeApp"):
+        self.app = app
+
+    def say(self, slot: str, text: str) -> None:
+        self.app.set_message(slot, text)
+
+    def ask(self, key: IssueKey, opener: str) -> None:
+        if not self.app.box_taken("start", opener):  # a box opened during the read is left as it is (#85)
+            self.app.ask_instructions(key, opener)
+
+    async def go(self, key: IssueKey, pane: str) -> None:
+        try:
+            await self.app.focuser(pane)
+        except FocusError as e:
+            self.app.pane_gone(key, pane, str(e), self)
+            return
+        self.app.set_message("start", f"{self.app.label(key)}: coordination session in {pane}")
+
+
 def issue_title(issue: Issue) -> str:
     kind = issue_kind(issue)
     return f"({kind}) {issue.title}".rstrip() if kind else issue.title
@@ -1775,9 +2034,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     source.add_argument("--workspace", metavar="DIR", help="a coordinator workspace; its repo.json names the repository")
     source.add_argument("--demo", action="store_true", help="show placeholder data")
     parser.add_argument("--coordinator", metavar="DIR", help="the autoflow-coordinator clone whose runs to show")
+    parser.add_argument("--browser-port", metavar="N", type=int, default=0,
+                        help="the localhost port browser control (b) listens on; 0, the default, lets the system pick")
     args = parser.parse_args(argv)
     if args.demo:
-        IdeApp(issues=placeholder_issues(), repository="(demo)", version=ide_version()).run()
+        IdeApp(issues=placeholder_issues(), repository="(demo)", version=ide_version(),
+               browser_port=args.browser_port).run()
         return
     repository = args.repo
     if args.workspace:
@@ -1785,7 +2047,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             repository = repository_from_workspace(args.workspace)
         except IssueSourceError as e:
             parser.error(str(e))
-    IdeApp(repository=repository, coordinator=args.coordinator, version=ide_version(), state_file=state_path()).run()
+    IdeApp(repository=repository, coordinator=args.coordinator, version=ide_version(), state_file=state_path(),
+           browser_port=args.browser_port).run()
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ import re
 import shlex
 import stat
 import sys
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -198,20 +199,44 @@ def window_name(workspace: str, issue: int) -> str:
     return f"{workspace}#{issue}"
 
 
-async def open_coordination(coordinator: str, name: str, text: str, token: Optional[Path] = None) -> str:
+# The pane option that keeps the session id a coordination session was started with, so its transcript is found
+# again after the IDE restarts (#86).
+SESSION_ID_OPTION = "@autoflow-session-id"
+
+
+def clone_path(coordinator: str) -> Path:
+    """The coordinator clone as its physical path: the one Claude Code names its project folder after (#86)."""
+    return Path(coordinator).expanduser().resolve()
+
+
+async def open_coordination(coordinator: str, name: str, text: str, token: Optional[Path] = None,
+                            detached: bool = False) -> str:
     """Open a tmux window named `name` with a shell in the coordinator clone, start Claude Code there with
     `text` as its first prompt, each whitespace character in it as a plain space and its other non-printable
-    characters dropped, and return the new pane's id. tmux moves to the new window.
+    characters dropped, and return the new pane's id. tmux moves to the new window, unless `detached`, which
+    leaves the current window as it is (#86).
     With `token` (a workspace's gh-token), Claude Code starts with that token as GH_TOKEN: the typed line reads
-    the file, as the coordinator's tools/launch.sh does, so the token is neither typed nor in tmux's arguments."""
+    the file, as the coordinator's tools/launch.sh does, so the token is neither typed nor in tmux's arguments.
+    Claude Code starts with a session id made here and kept on the pane (SESSION_ID_OPTION); when it cannot be
+    kept, the window is closed and nothing is typed (#86)."""
     if not os.environ.get("TMUX"):
         raise StartError("not inside tmux")
-    clone = str(Path(coordinator).expanduser())
-    pane = (await run("tmux", "new-window", "-c", clone, "-n", name, "-P", "-F", "#{pane_id}")).strip()
+    clone = str(clone_path(coordinator))
+    pane = (await run("tmux", "new-window", *(["-d"] if detached else []), "-c", clone, "-n", name,
+                      "-P", "-F", "#{pane_id}")).strip()
     if not pane.startswith("%"):
         raise StartError(f"tmux new-window: no pane id ({pane!r})")
+    session_id = str(uuid.uuid4())
+    try:
+        await run("tmux", "set-option", "-p", "-t", pane, SESSION_ID_OPTION, session_id)
+    except StartError:
+        try:
+            await run("tmux", "kill-window", "-t", pane)
+        except StartError:
+            pass  # the start fails with set-option's message either way (#86)
+        raise
     # As the coordinator's tmux terminal types a line: literal keys, then Enter; printable characters only (#85).
-    line = f"claude {shlex.quote(printable(text))}"
+    line = f"claude --session-id {session_id} {shlex.quote(printable(text))}"
     if token is not None:
         line = f"GH_TOKEN=$(cat {shlex.quote(str(token))}) {line}"
     await run("tmux", "send-keys", "-t", pane, "-l", "--", line)
@@ -234,18 +259,19 @@ async def coordinator_workspace_entry(coordinator: str, repository: str) -> Work
     return find_workspace_entry(await workspace_base(coordinator), repository)
 
 
-async def start_run(coordinator: str, repository: str, issue: int, instructions: str = "") -> str:
+async def start_run(coordinator: str, repository: str, issue: int, instructions: str = "",
+                    detached: bool = False) -> str:
     """Open a coordination session for `issue` of `repository`, with its workspace's token when it has one and
     `instructions` after the first prompt; returns its pane id. Nothing is opened when the workspace's gh-token
     cannot be used. The line is typed into tmux's default shell, which must be a POSIX shell: the prompt is one
-    word quoted by shlex.quote."""
+    word quoted by shlex.quote. With `detached`, the operator's tmux window stays current (#86)."""
     workspace = await coordinator_workspace_entry(coordinator, repository)
     try:
         token = token_file(workspace)
     except TokenError as e:
         raise StartError(str(e)) from e
     return await open_coordination(coordinator, window_name(workspace.name, issue),
-                                   instruction(workspace.name, issue, instructions), token)
+                                   instruction(workspace.name, issue, instructions), token, detached=detached)
 
 
 # Adding a workspace: the operator gives the repository; the coordination session asks for the rest (the clone, the

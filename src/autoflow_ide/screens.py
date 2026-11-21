@@ -36,3 +36,47 @@ def waiting(screen: str) -> bool:
     screen = screen.rstrip()
     bottom = '\n'.join(screen.splitlines()[-PROMPT_LINES:])
     return bool(INPUT_RE.search(bottom)) and not input_area(screen)
+
+
+# Whether a screen takes a message from the browser: the checks the coordinator makes before it submits a message to
+# a pane, and its size limit, copied from the coordinator version the IDE supports, so a message from the browser is
+# entered only where the coordinator would enter one (#86).
+EMPTY_INPUT = '❯'
+MAX_SUBMIT_BYTES = 700
+
+
+def input_area_text(screen: str):
+    """What Claude Code's input area shows, or None if the screen has none: between its last two rules (#86)."""
+    rules = list(INPUT_RULE_RE.finditer(screen))
+    return screen[rules[-2].end():rules[-1].start()].strip() if len(rules) >= 2 else None
+
+
+def input_held(screen: str):
+    """Why a Claude Code screen cannot take a message, or None: only an input area recognised as empty passes;
+    a draft, a dialog and a screen this does not know all hold the input (#86)."""
+    area = input_area_text(screen)
+    if area is None:
+        return 'no input area on the screen'
+    if area == EMPTY_INPUT:
+        return None
+    return (f'the input area is not empty: {area.splitlines()[0] if area else ""!r} '
+            '(if this is a prompt suggestion, the session needs promptSuggestionEnabled: false)')
+
+
+def submit_refused(screen: str, text: str):
+    """Why `text` cannot be entered on this screen, or None (#86)."""
+    size = len(text.encode())
+    return f'{size} bytes is over {MAX_SUBMIT_BYTES}: put it in a file' if size > MAX_SUBMIT_BYTES else input_held(screen)
+
+
+def input_holds(screen: str, text: str) -> bool:
+    """Whether the input area shows the end of `text`, so that Enter would submit it and nothing else; whitespace
+    does not count, as the screen wraps and indents lines (#86)."""
+    rules = list(INPUT_RULE_RE.finditer(screen))
+    if not rules:
+        return False
+    area = screen[rules[-2].end() if len(rules) >= 2 else 0:rules[-1].start()].strip()
+    if area.startswith(EMPTY_INPUT):
+        area = area[len(EMPTY_INPUT):]
+    shown = re.sub(r'\s+', '', area)
+    return bool(shown) and re.sub(r'\s+', '', text).endswith(shown)

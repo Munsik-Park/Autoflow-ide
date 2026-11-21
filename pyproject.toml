@@ -13,6 +13,10 @@ dependencies = ["textual>=8.2"]
 
 [project.optional-dependencies]
 test = ["pytest", "pytest-asyncio"]
+# Browser control (b): the local server (#86).
+# The aiohttp floor, 3.14.5, is above the releases before 3.14.4, which have known advisories (OSV). aiohttp 3.14
+# requires Python 3.10, so browser control needs Python 3.10 or later, and on Python 3.9 the extra installs no aiohttp.
+browser = ['aiohttp>=3.14.5,<4; python_version >= "3.10"']
 
 [project.scripts]
 autoflow-ide = "autoflow_ide.app:main"
@@ -21,7 +25,7 @@ autoflow-ide = "autoflow_ide.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-autoflow_ide = ["*.tcss"]
+autoflow_ide = ["*.tcss", "web/*.html", "web/*.js", "web/*.css", "web/xterm/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -35,6 +35,14 @@
     padding: 0 1;
     background: $panel;
     color: $text-muted;
+    /* Each row cut at the width with an ellipsis, so a long row does not push the next one off screen (#86). */
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* Browser control's address on a row of its own above the status line, while it runs (#86). */
+#status.with-browser {
+    height: 2;
 }
 
 StepDetail, FolderView, OutputView {
