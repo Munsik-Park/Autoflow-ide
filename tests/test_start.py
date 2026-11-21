@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import stat
 
 import pytest
@@ -24,6 +25,17 @@ def fake_tmux(tmp_path, monkeypatch, fail_with=None):
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("TMUX", "/tmp/tmux-test,1,0")
     return log
+
+
+# The session id the IDE starts a coordination session with, as uuid4() gives it: canonical, lowercase (#86).
+UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+
+
+def session_id(calls):
+    """The id the IDE kept on pane %7, from its `set-option -p -t %7 @autoflow-session-id <id>` (#86)."""
+    [sid] = [c.split()[-1] for c in calls if c.startswith("set-option -p -t %7 @autoflow-session-id ")]
+    assert re.fullmatch(UUID, sid)
+    return sid
 
 
 def coordinator_clone(tmp_path, base):
@@ -108,9 +120,12 @@ async def test_opens_a_window_in_the_clone_and_starts_claude_with_the_instructio
     log = fake_tmux(tmp_path, monkeypatch)
     pane = await open_coordination("/coord", "autoflow-sandbox#4", "Workspace autoflow-sandbox, issue #4.")
     assert pane == "%7"
-    assert log.read_text().splitlines() == [
+    calls = log.read_text().splitlines()
+    sid = session_id(calls)
+    assert calls == [
         "new-window -c /coord -n autoflow-sandbox#4 -P -F #{pane_id}",
-        "send-keys -t %7 -l -- claude 'Workspace autoflow-sandbox, issue #4.'",
+        f"set-option -p -t %7 @autoflow-session-id {sid}",          # kept on the pane, before claude starts (#86)
+        f"send-keys -t %7 -l -- claude --session-id {sid} 'Workspace autoflow-sandbox, issue #4.'",
         "send-keys -t %7 Enter",
     ]
 
@@ -135,7 +150,7 @@ async def test_start_run(tmp_path, monkeypatch):
     assert await start_run(clone, "Munsik-Park/autoflow-sandbox", 4) == "%7"
     calls = log.read_text().splitlines()
     assert calls[0] == f"new-window -c {clone} -n autoflow-sandbox#4 -P -F #{{pane_id}}"
-    assert calls[1].endswith("claude 'Workspace autoflow-sandbox, issue #4.'")
+    assert calls[2].endswith(f"claude --session-id {session_id(calls)} 'Workspace autoflow-sandbox, issue #4.'")
 
 
 async def test_create_workspace_opens_a_coordination_session_named_apart_from_issue_windows(tmp_path, monkeypatch):
@@ -144,9 +159,12 @@ async def test_create_workspace_opens_a_coordination_session_named_apart_from_is
     clone = coordinator_clone(tmp_path, base)
     log = fake_tmux(tmp_path, monkeypatch)
     assert await create_workspace(clone, "Munsik-Park/opensre") == "%7"
-    assert log.read_text().splitlines() == [
+    calls = log.read_text().splitlines()
+    sid = session_id(calls)
+    assert calls == [
         f"new-window -c {clone} -n workspace:Munsik-Park/opensre -P -F #{{pane_id}}",
-        "send-keys -t %7 -l -- claude 'Create a workspace for Munsik-Park/opensre.'",
+        f"set-option -p -t %7 @autoflow-session-id {sid}",
+        f"send-keys -t %7 -l -- claude --session-id {sid} 'Create a workspace for Munsik-Park/opensre.'",
         "send-keys -t %7 Enter",
     ]
 
@@ -171,8 +189,8 @@ async def test_create_workspace_from_a_clone_address(tmp_path, monkeypatch):
     assert await create_workspace(clone, "git@github.com:connev-llm/llmroute.git") == "%7"
     calls = log.read_text().splitlines()
     assert calls[0] == f"new-window -c {clone} -n workspace:connev-llm/llmroute -P -F #{{pane_id}}"
-    assert calls[1] == ("send-keys -t %7 -l -- claude 'Create a workspace for connev-llm/llmroute, cloned from "
-                        "git@github.com:connev-llm/llmroute.git.'")
+    assert calls[2] == (f"send-keys -t %7 -l -- claude --session-id {session_id(calls)} 'Create a workspace for "
+                        "connev-llm/llmroute, cloned from git@github.com:connev-llm/llmroute.git.'")
     with pytest.raises(StartError, match="Munsik-Park/autoflow-sandbox already has a workspace"):
         await create_workspace(clone, "https://github.com/Munsik-Park/autoflow-sandbox")
 
@@ -275,8 +293,9 @@ async def test_opens_claude_with_the_token_read_from_its_file(tmp_path, monkeypa
     # in tmux's arguments.
     log = fake_tmux(tmp_path, monkeypatch)
     await open_coordination("/coord", "w#1", "Workspace w, issue #1.", tmp_path / "my base" / "gh-token")
-    assert log.read_text().splitlines()[1] == (
-        f"send-keys -t %7 -l -- GH_TOKEN=$(cat '{tmp_path}/my base/gh-token') claude 'Workspace w, issue #1.'")
+    calls = log.read_text().splitlines()
+    assert calls[2] == (f"send-keys -t %7 -l -- GH_TOKEN=$(cat '{tmp_path}/my base/gh-token') claude --session-id "
+                        f"{session_id(calls)} 'Workspace w, issue #1.'")
 
 
 async def test_start_run_with_the_workspaces_token(tmp_path, monkeypatch):
@@ -287,7 +306,8 @@ async def test_start_run_with_the_workspaces_token(tmp_path, monkeypatch):
     log = fake_tmux(tmp_path, monkeypatch)
     assert await start_run(clone, "Munsik-Park/autoflow-sandbox", 4) == "%7"
     calls = log.read_text()
-    assert f"GH_TOKEN=$(cat {base}/autoflow-sandbox/gh-token) claude 'Workspace autoflow-sandbox, issue #4.'" in calls
+    assert (f"GH_TOKEN=$(cat {base}/autoflow-sandbox/gh-token) claude --session-id {session_id(calls.splitlines())} "
+            "'Workspace autoflow-sandbox, issue #4.'") in calls
     assert "github_pat_abc" not in calls
 
 
@@ -350,7 +370,9 @@ async def test_start_run_types_the_instructions_as_one_word_of_the_first_prompt(
     clone = coordinator_clone(tmp_path, base)
     log = fake_tmux_args(tmp_path, monkeypatch)
     assert await start_run(clone, "Munsik-Park/autoflow-sandbox", 4, text) == "%7"
-    assert shlex.split(typed_line(log)) == ["claude", "Workspace autoflow-sandbox, issue #4. " + text]
+    words = shlex.split(typed_line(log))
+    assert words[:2] == ["claude", "--session-id"] and re.fullmatch(UUID, words[2])     # #86 (#86)
+    assert words[3:] == ["Workspace autoflow-sandbox, issue #4. " + text]
 
 
 @pytest.mark.parametrize("text", INSTRUCTIONS)
@@ -363,7 +385,8 @@ async def test_start_run_types_the_instructions_after_the_token(tmp_path, monkey
     await start_run(clone, "Munsik-Park/autoflow-sandbox", 4, text)
     words = shlex.split(typed_line(log))
     assert words[0].startswith("GH_TOKEN=$(cat")
-    assert words[-2:] == ["claude", "Workspace autoflow-sandbox, issue #4. " + text]
+    assert words[-4:-2] == ["claude", "--session-id"] and re.fullmatch(UUID, words[-2])     # #86 (#86)
+    assert words[-1] == "Workspace autoflow-sandbox, issue #4. " + text
     assert "github_pat_abc" not in log.read_text()
 
 
@@ -373,7 +396,7 @@ async def test_start_run_with_no_instructions_types_todays_line(tmp_path, monkey
     clone = coordinator_clone(tmp_path, base)
     log = fake_tmux_args(tmp_path, monkeypatch)
     await start_run(clone, "Munsik-Park/autoflow-sandbox", 4, "")
-    assert typed_line(log) == "claude 'Workspace autoflow-sandbox, issue #4.'"
+    assert re.fullmatch(f"claude --session-id {UUID} 'Workspace autoflow-sandbox, issue #4.'", typed_line(log))
 
 
 # Control characters in the instructions, as a paste can carry them (#85): the shell's line editor would act on
@@ -404,4 +427,66 @@ async def test_start_run_drops_control_characters_from_the_instructions(tmp_path
     await start_run(clone, "Munsik-Park/autoflow-sandbox", 4, text)
     line = typed_line(log)
     assert all(c.isprintable() for c in line)
-    assert shlex.split(line) == ["claude", "Workspace autoflow-sandbox, issue #4. " + kept]
+    words = shlex.split(line)
+    assert words[:2] == ["claude", "--session-id"] and re.fullmatch(UUID, words[2])     # #86 (#86)
+    assert words[3:] == ["Workspace autoflow-sandbox, issue #4. " + kept]
+
+
+# Browser control (#86): a start from the browser leaves the operator's tmux window where it is, and every
+# coordination session is started with a session id kept on its pane, so its transcript can be found. (#86)
+
+async def test_a_detached_open_leaves_the_operators_window_and_the_terminals_open_is_as_before(tmp_path, monkeypatch):
+    log = fake_tmux(tmp_path, monkeypatch)
+    assert await open_coordination("/coord", "autoflow-sandbox#4", "Workspace autoflow-sandbox, issue #4.",
+                                   detached=True) == "%7"
+    assert log.read_text().splitlines()[0] == "new-window -d -c /coord -n autoflow-sandbox#4 -P -F #{pane_id}"
+    log.unlink()
+    await open_coordination("/coord", "autoflow-sandbox#4", "Workspace autoflow-sandbox, issue #4.")
+    assert log.read_text().splitlines()[0] == "new-window -c /coord -n autoflow-sandbox#4 -P -F #{pane_id}"
+
+
+async def test_start_run_passes_detached_to_the_window(tmp_path, monkeypatch):
+    base = tmp_path / "base"
+    workspace(base, "autoflow-sandbox", "Munsik-Park/autoflow-sandbox")
+    clone = coordinator_clone(tmp_path, base)
+    log = fake_tmux(tmp_path, monkeypatch)
+    assert await start_run(clone, "Munsik-Park/autoflow-sandbox", 4, "", detached=True) == "%7"
+    assert log.read_text().splitlines()[0] == f"new-window -d -c {clone} -n autoflow-sandbox#4 -P -F #{{pane_id}}"
+
+
+async def test_each_open_has_a_session_id_of_its_own(tmp_path, monkeypatch):
+    log = fake_tmux(tmp_path, monkeypatch)
+    await open_coordination("/coord", "w#1", "one")
+    first = session_id(log.read_text().splitlines())
+    log.unlink()
+    await open_coordination("/coord", "w#1", "two")
+    assert session_id(log.read_text().splitlines()) != first
+
+
+async def test_a_failed_set_option_closes_the_window_and_types_nothing(tmp_path, monkeypatch):
+    # The id would be known to no one, so no session is started without it (#86).
+    log = tmp_path / "calls"
+    script = (f'#!/bin/sh\necho "$@" >> "{log}"\n'
+              'if [ "$1" = new-window ]; then echo %7; fi\n'
+              'if [ "$1" = set-option ]; then echo "invalid option: @autoflow-session-id" >&2; exit 1; fi\n')
+    tmux = tmp_path / "tmux"
+    tmux.write_text(script)
+    tmux.chmod(tmux.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("TMUX", "/tmp/tmux-test,1,0")
+    with pytest.raises(StartError, match="invalid option: @autoflow-session-id"):
+        await open_coordination("/coord", "w#1", "text")
+    calls = log.read_text().splitlines()
+    assert [c.split()[0] for c in calls] == ["new-window", "set-option", "kill-window"]
+    assert calls[2] == "kill-window -t %7"
+    assert not any(c.startswith("send-keys") for c in calls)
+
+
+async def test_the_clone_given_through_a_symlink_opens_in_its_resolved_path(tmp_path, monkeypatch):
+    # Claude Code names its project folder after the physical working directory (#86).
+    real = tmp_path / "real" / "coordination"
+    real.mkdir(parents=True)
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+    log = fake_tmux(tmp_path, monkeypatch)
+    await open_coordination(str(tmp_path / "link" / "coordination"), "w#1", "text")
+    assert log.read_text().splitlines()[0] == f"new-window -c {real.resolve()} -n w#1 -P -F #{{pane_id}}"
