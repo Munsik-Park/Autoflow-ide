@@ -14,10 +14,12 @@ dependencies = ["textual>=8.2"]
 [project.optional-dependencies]
 test = ["pytest", "pytest-asyncio"]
 # Browser control (b): the local server. browser-test adds Playwright for tests/test_browser_page.py (#86).
-# aiohttp 3.13.5 is the newest release for Python 3.9; on 3.10 and later pip takes a newer 3.x. Playwright 1.60.0 is
-# the last for 3.9; 1.61 is the one whose Chromium (149, build 1228) the browser tests were run with (#86).
-browser = ["aiohttp>=3.13.5,<4"]
-browser-test = ["pytest", "pytest-asyncio", "aiohttp>=3.13.5,<4", "playwright>=1.60.0,<1.62"]
+# Browser control needs Python 3.10 or later: aiohttp 3.14.5, the first release with no known advisory, needs it, and on
+# Python 3.9 the extras install nothing rather than an affected release. Playwright 1.61 is the release whose
+# Chromium (149, build 1228) the browser tests were run with (#86).
+browser = ['aiohttp>=3.14.5,<4; python_version >= "3.10"']
+browser-test = ["pytest", "pytest-asyncio", 'aiohttp>=3.14.5,<4; python_version >= "3.10"',
+                'playwright>=1.61.0,<1.62; python_version >= "3.10"']
 
 [project.scripts]
 autoflow-ide = "autoflow_ide.app:main"

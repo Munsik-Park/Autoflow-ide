@@ -1,5 +1,6 @@
 """The IDE screen: issues, the selected issue's run, and its sessions."""
 import argparse
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +51,8 @@ IssueKey = Tuple[str, int]
 # What read_windows_of returns when the coordinator names no workspace for the issue's repository (#85).
 NO_WORKSPACE = "no workspace"
 RUN_REFRESH_SEC = 5.0
+# Browser control runs on this Python or later, the oldest aiohttp >= 3.14.5 supports (#86).
+BROWSER_PYTHON = (3, 10)
 # The open issues are also read again on this interval, so an issue a merge closed leaves the list without a
 # key press (about 60 gh calls an hour), and when a step changes (see show_runs).
 ISSUE_REFRESH_SEC = 60.0
@@ -1776,6 +1779,10 @@ class IdeApp(App):
             self.browser_busy = False
 
     async def start_browser(self) -> None:
+        if sys.version_info < BROWSER_PYTHON:
+            # The aiohttp releases for older Pythons have known flaws; the extra installs none there (#86).
+            self.set_message("browser", "browser control needs Python 3.10 or later")
+            return
         try:
             from autoflow_ide.browser import BrowserServer  # only browser control needs aiohttp (#86)
         except ImportError:
