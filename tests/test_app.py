@@ -3255,6 +3255,9 @@ async def test_every_footer_key_fits_at_124_columns_and_S_is_next_to_s(every):
         assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:]))
         names = [k.key for k in bindings]
         assert names[names.index("s") + 1] == "S"
+        # b turns browser control on and off, and is not shown, so every key still fits (#86).
+        assert "b" in app.active_bindings and not app.active_bindings["b"].binding.show
+        assert "b" not in names
 
 
 async def test_session_rows_follow_folding_and_a():
