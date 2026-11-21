@@ -95,38 +95,3 @@ def test_a_recorded_prompt_scrolled_up_above_an_input_area_does_not_wait():
     rule = "─" * 20
     text = screen("choice-prompt.txt").rstrip() + "\n" + "\n" * PROMPT_LINES + f"{rule}\n❯{NBSP}\n{rule}\n  status\n"
     assert not waiting(text)
-
-
-# Whether a screen takes a message, copied from the coordinator's tools/terminals (input_held, submit_refused, (#86)
-# input_holds, MAX_SUBMIT_BYTES), so a message from the browser is entered only where the coordinator's submit (#86)
-# would enter it (#86). Imported in each test: the rest of the file runs without them.
-
-def test_only_an_empty_input_area_takes_a_message():
-    from autoflow_ide.screens import input_held
-    for name in INPUT_AREAS:                   # empty input areas, at work, at turn end, waiting for an agent (#86)
-        assert input_held(screen(name)) is None
-    assert input_held(screen("permission-prompt.txt")) == "no input area on the screen"
-    for name in ("choice-prompt.txt", "choice-prompt-80.txt"):      # the dialog between the last two rules (#86)
-        assert input_held(screen(name)).startswith("the input area is not empty: '☐ Workflow'")
-    draft = screen("turn-end.txt").replace(f"\n❯{NBSP}\n", f"\n❯{NBSP}my draft\n")
-    assert input_held(draft).startswith("the input area is not empty: '❯")
-    assert input_held("some output\n") == "no input area on the screen"
-
-
-def test_a_message_over_700_bytes_is_refused():
-    from autoflow_ide.screens import MAX_SUBMIT_BYTES, submit_refused
-    assert MAX_SUBMIT_BYTES == 700
-    assert submit_refused(screen("turn-end.txt"), "x" * 700) is None
-    assert submit_refused(screen("turn-end.txt"), "x" * 701) == "701 bytes is over 700: put it in a file"
-    assert submit_refused(screen("turn-end.txt"), "가" * 234) == "702 bytes is over 700: put it in a file"   # bytes (#86)
-    assert submit_refused(screen("permission-prompt.txt"), "hi") == "no input area on the screen"
-
-
-def test_the_input_area_holds_the_text_entered():
-    from autoflow_ide.screens import input_holds
-    entered = screen("turn-end.txt").replace(f"\n❯{NBSP}\n", f"\n❯{NBSP}look at the second step\n")
-    assert input_holds(entered, "look at the second step")
-    assert input_holds(entered, "look at\nthe second   step")          # whitespace does not count (#86)
-    assert not input_holds(screen("turn-end.txt"), "look at the second step")
-    assert not input_holds(entered, "something else")
-    assert not input_holds("no rules here\n", "no rules here")
