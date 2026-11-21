@@ -1016,6 +1016,12 @@ async def test_one_view_per_page_and_closing_it_stops_its_reads():
 
 # The state the terminal shows, at the same read (#86)
 
+def built_rows(app):
+    """The terminal's issue rows before its table cuts them to its column width: the rows and values it draws
+    from (#86)."""
+    return [(key, list(cells)) for key, cells in app.issue_rows]
+
+
 async def test_the_page_gets_the_terminals_rows_at_each_read():
     t = Harness(windows=PaneWindows({4: [Window("@4", "autoflow-sandbox#4", ["%7"])]}), window_check_sec=0.1)
     async with t.app.run_test(size=WIDE) as pilot:
@@ -1023,23 +1029,23 @@ async def test_the_page_gets_the_terminals_rows_at_each_read():
         base = await browser_on(t.app, pilot)
         async with Page(base) as page:
             await settle(t.app, pilot)
-            assert page.rows() == issue_rows(t.app)
+            assert page.rows() == built_rows(t.app)
             # A read of the runs: issue 3's run is gone. (#86)
             t.runs = []
             t.app.refresh_runs()
             await settle(t.app, pilot)
-            assert page.rows() == issue_rows(t.app) and "●" not in [c[0] for _, c in page.rows()]
+            assert page.rows() == built_rows(t.app) and "●" not in [c[0] for _, c in page.rows()]
             # A read of the issues: issue 7 is listed. (#86)
             t.issues = t.issues + [Issue(7, "seven <b>bold</b>")]
             t.app.action_refresh_issues()
             await settle(t.app, pilot)
-            assert page.rows() == issue_rows(t.app) and "7" in [key for key, _ in page.rows()]
+            assert page.rows() == built_rows(t.app) and "7" in [key for key, _ in page.rows()]
             # A window check: issue 4's window shows a prompt. (#86)
             t.windows.window_screens["@4"] = CHOICE
             await pilot.pause(0.4)
             await settle(t.app, pilot)
             assert dict(issue_rows(t.app))["4"][0] == "?"
-            assert page.rows() == issue_rows(t.app)
+            assert page.rows() == built_rows(t.app)
 
 
 def info_shown(app):
