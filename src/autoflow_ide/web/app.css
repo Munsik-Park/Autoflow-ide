@@ -1,0 +1,28 @@
+/* The IDE's screen in a page (#86). */
+:root { color-scheme: dark; --bg: #111418; --fg: #d8dee4; --dim: #8b949e; --line: #30363d; --accent: #58a6ff; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 ui-monospace, Menlo, monospace; }
+header { padding: 6px 12px; border-bottom: 1px solid var(--line); }
+#server-state { color: var(--dim); margin-left: 1em; }
+#columns { display: flex; gap: 8px; padding: 8px; }
+.pane { border: 1px solid var(--line); padding: 6px; overflow: auto; max-height: 50vh; }
+#left { flex: 3 1 0; } #middle { flex: 4 1 0; } #right { flex: 2 1 0; }
+h2, h3 { font-size: 13px; color: var(--dim); margin: 0 0 4px; }
+.row { display: flex; gap: 1ch; cursor: pointer; white-space: pre; }
+.row > * { overflow: hidden; text-overflow: ellipsis; }
+.row > :first-child { flex: 0 0 2ch; }
+.row.chosen { background: #1f2a37; }
+#steps .row, #sessions .row { cursor: default; }
+#sessions .row { cursor: pointer; }
+#info .line { white-space: pre; }
+.buttons { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
+#instructions input { width: 100%; }
+#messages { padding: 0 8px; max-height: 8em; overflow: auto; }
+#messages > div { border-left: 2px solid var(--accent); padding-left: 6px; margin: 2px 0; white-space: pre-wrap; }
+#panel { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.panel-title { color: var(--dim); margin-bottom: 4px; }
+#view { display: inline-block; }
+#message-text { width: 60ch; }
+#keys button { margin-right: 2px; }
+pre { white-space: pre-wrap; word-break: break-all; margin: 0; }
+.transcript { border-top: 1px solid var(--line); padding-top: 4px; margin-top: 4px; }
+.notes { color: var(--dim); }

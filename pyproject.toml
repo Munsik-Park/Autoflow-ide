@@ -13,6 +13,9 @@ dependencies = ["textual>=8.2"]
 
 [project.optional-dependencies]
 test = ["pytest", "pytest-asyncio"]
+# Browser control (b): the local server. browser-test adds Playwright for tests/test_browser_page.py (#86).
+browser = ["aiohttp"]
+browser-test = ["pytest", "pytest-asyncio", "aiohttp", "playwright"]
 
 [project.scripts]
 autoflow-ide = "autoflow_ide.app:main"
@@ -21,7 +24,7 @@ autoflow-ide = "autoflow_ide.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-autoflow_ide = ["*.tcss"]
+autoflow_ide = ["*.tcss", "web/*.html", "web/*.js", "web/*.css", "web/xterm/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -199,7 +199,7 @@ def window_name(workspace: str, issue: int) -> str:
     return f"{workspace}#{issue}"
 
 
-# The pane option that keeps the session id a coordination session was started with, so its transcript is found
+# The pane option that keeps the session id a coordination session was started with, so its transcript is found (#86)
 # again after the IDE restarts (#86).
 SESSION_ID_OPTION = "@autoflow-session-id"
 

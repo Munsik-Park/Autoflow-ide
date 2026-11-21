@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>autoflow-ide</title>
+<link rel="stylesheet" href="xterm/xterm.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header><span id="title">autoflow-ide</span> <span id="server-state">connecting</span></header>
+<main id="columns">
+  <section id="left" class="pane"><h2>Issues</h2><div id="issues"></div>
+    <div class="buttons">
+      <button id="start" type="button" title="s">Start</button>
+      <button id="new-session" type="button" title="S">New session</button>
+      <button id="go" type="button">Go to session</button>
+      <button id="records-open" type="button">Records</button>
+    </div>
+    <div id="instructions" hidden>
+      <label for="instructions-text" id="instructions-title">Instructions</label>
+      <input id="instructions-text" type="text" autocomplete="off" placeholder="focus or approach; Enter to start, Esc to cancel">
+    </div>
+  </section>
+  <section id="middle" class="pane"><h2>Run</h2><div id="info"></div><div id="steps"></div></section>
+  <section id="right" class="pane"><h2>Sessions</h2><div id="sessions"></div></section>
+</main>
+<section id="messages"></section>
+<section id="panel">
+  <div id="view-box"><div class="panel-title">View <span id="view-name"></span> <button id="view-close" type="button">Close</button></div><div id="view"></div></div>
+  <div id="input" hidden>
+    <div class="panel-title">Input to <span id="input-target"></span></div>
+    <div id="message-box">
+      <textarea id="message-text" rows="3"></textarea>
+      <button id="message-send" type="button">Send</button>
+      <span id="message-limit">at most 700 bytes, to an empty input area; longer text goes in a file</span>
+    </div>
+    <div id="keys"></div>
+    <div id="input-note"></div>
+  </div>
+  <div id="records" hidden>
+    <div class="panel-title">Records <span id="records-name"></span></div>
+    <div id="records-about"></div>
+    <h3>Screen</h3><pre id="screen-text"></pre>
+    <h3>Transcript</h3><div id="transcripts"></div>
+  </div>
+</section>
+<script src="xterm/xterm.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

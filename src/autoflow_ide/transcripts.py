@@ -50,7 +50,7 @@ def read_tail(path: Path, limit: int = LIMIT) -> Tail:
     last = rest.rfind(b"\n")
     e = s + last + 1 if last >= 0 else s
     if s >= e and start > 0 and before != b"\n" and chunk.find(b"\n") in (-1, len(chunk) - 1):
-        # One record spans the whole window.
+        # One record spans the whole window. (#86)
         return Tail(b"", [f"the last record is over 512 KB: no record shown ({size} bytes in the file)"])
     notes = []
     if s > 0:

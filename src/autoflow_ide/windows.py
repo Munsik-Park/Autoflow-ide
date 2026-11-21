@@ -82,7 +82,7 @@ class TmuxWindows:
         await tmux("kill-window", "-t", window.id)
 
     # A pane as browser control reads it and writes to it (#86). None of these attaches a client or takes the
-    # pane's pipe, so no window's size changes.
+    # pane's pipe, so no window's size changes. (#86)
 
     async def frame(self, pane: str) -> "Frame":
         """What `pane` shows now, with its colours, cursor and size. capture-pane goes first: it fails on a pane
@@ -130,16 +130,16 @@ class Frame:
     in_mode: bool
 
 
-# In a row of capture-pane -e: SGR is kept; every other escape sequence and control character is dropped, so a
+# In a row of capture-pane -e: SGR is kept; every other escape sequence and control character is dropped, so a (#86)
 # link printed by a session (OSC 8) reaches the page as its text only (#86).
 SGR_RE = re.compile(r"\x1b\[[0-9;:]*m")
 ESCAPE_RE = re.compile(
-    r"\x1b\[[0-9;:]*m"                              # SGR
-    r"|\x1b\[[0-?]*[ -/]*[@-~]"                      # any other CSI
-    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)"           # OSC, ended by BEL or ST
-    r"|\x1b[P^_X].*?(?:\x1b\\|$)"                     # DCS, SOS, PM, APC, ended by ST
-    r"|\x1b.?"                                        # any other escape
-    r"|[\x00-\x1f\x7f-\x9f]")                          # C0 and C1 controls
+    r"\x1b\[[0-9;:]*m"                              # SGR (#86)
+    r"|\x1b\[[0-?]*[ -/]*[@-~]"                      # any other CSI (#86)
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)"           # OSC, ended by BEL or ST (#86)
+    r"|\x1b[P^_X].*?(?:\x1b\\|$)"                     # DCS, SOS, PM, APC, ended by ST (#86)
+    r"|\x1b.?"                                        # any other escape (#86)
+    r"|[\x00-\x1f\x7f-\x9f]")                          # C0 and C1 controls (#86)
 
 
 def clean_row(row: str) -> str:
