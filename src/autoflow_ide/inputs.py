@@ -19,7 +19,9 @@ class NoPrompt(InputRefused):
 
 
 async def keys_reach(windows, pane: str) -> None:
-    if await windows.in_mode(pane):
+    """Refuse a pane in copy mode; a mode not known (a pane that is gone) is left to the screen read that follows,
+    which fails on it (#86)."""
+    if await windows.in_mode(pane) is True:
         raise InputRefused(f"{pane} is in copy mode: leave it (q) and retry")
 
 

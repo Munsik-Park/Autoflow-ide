@@ -937,7 +937,7 @@ class IdeApp(App):
         except NoMatches:
             pass  # the app is closing: its widgets are gone
 
-    # Starting a run. Each check says why it refuses through the reporter of the side that asked: the terminal's (#86)
+    # Starting a run. Each check says why it refuses through the reporter of the side that asked: the terminal's
     # status line, or the asking browser page (#86).
 
     def can_start(self, issue: Issue, reporter: Optional["Reporter"] = None) -> bool:

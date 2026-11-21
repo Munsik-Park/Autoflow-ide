@@ -100,9 +100,11 @@ class TmuxWindows:
         """The session id the IDE kept on `pane` when it started it; empty when it has none (#86)."""
         return (await tmux("display-message", "-p", "-t", pane, "#{@autoflow-session-id}")).strip()
 
-    async def in_mode(self, pane: str) -> bool:
-        """Whether `pane` is in a mode (copy mode), where keys go to the mode and are lost (#86)."""
-        return (await tmux("display-message", "-p", "-t", pane, "#{pane_in_mode}")).strip() != "0"
+    async def in_mode(self, pane: str) -> Optional[bool]:
+        """Whether `pane` is in a mode (copy mode), where keys go to the mode and are lost; None when tmux prints
+        nothing, as it does for a pane that is gone, so the pane's next read says why (#86)."""
+        mode = (await tmux("display-message", "-p", "-t", pane, "#{pane_in_mode}")).strip()
+        return None if not mode else mode != "0"
 
     async def paste(self, pane: str, text: str) -> None:
         """Enter `text` in `pane` as the coordinator's submit does: paste-buffer -r, so a line feed does not submit
@@ -139,7 +141,7 @@ class Frame:
     in_mode: bool
 
 
-# In a row of capture-pane -e: SGR is kept; every other escape sequence and control character is dropped, so a (#86)
+# In a row of capture-pane -e: SGR is kept; every other escape sequence and control character is dropped, so a
 # link printed by a session (OSC 8) reaches the page as its text only (#86).
 SGR_RE = re.compile(r"\x1b\[[0-9;:]*m")
 ESCAPE_RE = re.compile(

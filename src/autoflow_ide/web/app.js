@@ -11,7 +11,7 @@
   let state = null;
   let chosenRow = null;
   let target = null;          // {row} for a coordination session, {run, session} for a work session (#86)
-  let latestStart = null;     // the issue of this page's latest start, whose box may open (#86)
+  let latestStart = null;     // the issue of this page's latest start, {repository, number}, whose box may open (#86)
   let box = null;
   let term = null;
   let view = null;            // the number of the view open on this page; frames of any other are not drawn (#86)
@@ -112,7 +112,13 @@
 
   function issueOf(row) {
     const found = state ? state.issues.find((r) => r.key === row) : null;
-    return found ? found.number : null;
+    return found ? { repository: found.repository, number: found.number } : null;
+  }
+
+  // An issue as the page names it: its repository's name too while the page shows more than one repository (#86).
+  function issueLabel(repository, number) {
+    const shown = new Set(state ? state.issues.map((r) => r.repository).filter((r) => r) : []);
+    return shown.size > 1 && repository ? repository.split("/").pop() + "#" + number : "#" + number;
   }
 
   function startAction(name) {
@@ -125,12 +131,14 @@
   }
 
   function openBox(message) {
-    if (latestStart !== null && message.number !== latestStart) {
-      say("#" + message.number + ": the instructions box is not opened, a later start was asked");
+    const label = issueLabel(message.repository, message.number);
+    if (latestStart !== null &&
+        (message.repository !== latestStart.repository || message.number !== latestStart.number)) {
+      say(label + ": the instructions box is not opened, a later start was asked");
       return;
     }
     box = message;
-    $("instructions-title").textContent = "Instructions for #" + message.number + " (" + message.opener + ")";
+    $("instructions-title").textContent = "Instructions for " + label + " (" + message.opener + ")";
     $("instructions").hidden = false;
     $("instructions-text").value = "";
     $("instructions-text").focus();

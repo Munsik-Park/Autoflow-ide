@@ -38,9 +38,9 @@ def waiting(screen: str) -> bool:
     return bool(INPUT_RE.search(bottom)) and not input_area(screen)
 
 
-# Whether a screen takes a message from the browser, copied from the coordinator's tools/terminals (input_held, (#86)
-# submit_refused, input_holds, MAX_SUBMIT_BYTES) of the version the IDE supports, so a message is entered only where (#86)
-# the coordinator's submit would enter it (#86).
+# Whether a screen takes a message from the browser: the checks the coordinator makes before it submits a message to
+# a pane, and its size limit, copied from the coordinator version the IDE supports, so a message from the browser is
+# entered only where the coordinator would enter one (#86).
 EMPTY_INPUT = '❯'
 MAX_SUBMIT_BYTES = 700
 

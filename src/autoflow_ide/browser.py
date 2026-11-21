@@ -39,6 +39,8 @@ FILES = {"": ("index.html", "text/html"), "app.js": ("app.js", "application/java
          "xterm/xterm.css": ("xterm/xterm.css", "text/css")}
 # How often an open view reads its pane. (#86)
 VIEW_POLL_SEC = 0.5
+# How long a stop waits for an input under way to finish, so no pasted text is left unsubmitted (#86).
+INPUT_STOP_WAIT_SEC = 5.0
 CLEAR_NOTE = ("after /clear, or claude started again in this pane, the session writes another transcript, "
               "which the IDE does not know")
 
@@ -51,10 +53,10 @@ class Page:
         self.id = secrets.token_hex(8)
         self.chosen: Optional[str] = None
         self.view = 0
+        self.closes = 0
         self.queue: "asyncio.Queue[Optional[dict]]" = asyncio.Queue()
         self.closed = False
         self.sender = asyncio.ensure_future(self.send_all())
-        self.reporter = PageReporter(self)
 
     def put(self, message: dict) -> None:
         if not self.closed:
@@ -86,7 +88,14 @@ class Page:
         self.server.app.run_worker(self.poll(self.view, pane, failed), group=self.view_group, exclusive=True)
 
     def close_view(self) -> None:
+        """Stop the view; a go-to or start asked before this opens no view after it (#86)."""
+        self.closes += 1
         self.server.app.workers.cancel_group(self.server.app, self.view_group)
+
+    def asking(self) -> "PageReporter":
+        """The reporter of one action of this page: it opens a view only while the page has not closed its view
+        since the action was asked (#86)."""
+        return PageReporter(self)
 
     async def poll(self, view: int, pane: str, failed) -> None:
         """Read the pane every VIEW_POLL_SEC and send each screen that differs from the last; no tmux client is
@@ -123,6 +132,12 @@ class PageReporter(Reporter):
 
     def __init__(self, page: Page):
         self.page = page
+        self.closes = page.closes
+
+    @property
+    def closed_since(self) -> bool:
+        """Whether the page closed its view after this action was asked (#86)."""
+        return self.page.closes != self.closes
 
     def say(self, slot: str, text: str) -> None:
         self.page.say(text)
@@ -131,6 +146,8 @@ class PageReporter(Reporter):
         self.page.put({"type": "instructions", "repository": key[0], "number": key[1], "opener": opener})
 
     async def go(self, key: IssueKey, pane: str) -> None:
+        if self.closed_since:
+            return
         app = self.page.server.app
         self.page.open_view(pane, lambda error: app.pane_gone(key, pane, error, self))
 
@@ -143,6 +160,7 @@ class BrowserServer:
         self.runner: Optional[web.AppRunner] = None
         self.push_pending = False
         self.input_locks: Dict[str, asyncio.Lock] = {}
+        self.stopping = False
 
     @property
     def url(self) -> str:
@@ -174,15 +192,30 @@ class BrowserServer:
         self.port = self.runner.addresses[0][1]
 
     async def stop(self) -> None:
-        """Tell each page that the server stopped and close it, stop the browser's work, then the server."""
+        """Tell each page that the server stopped and close it, stop the browser's work, then the server. An input
+        already under way in a pane finishes first, so no text is left pasted and not submitted; one not begun is
+        refused (#86)."""
+        self.stopping = True
         for page in list(self.pages.values()):
             page.put({"type": "stopped"})
             await page.close()
             await page.ws.close()
         self.pages.clear()
+        await self.inputs_done()
         self.app.workers.cancel_group(self.app, "browser")
         if self.runner is not None:
             await self.runner.cleanup()
+
+    async def inputs_done(self) -> None:
+        """Wait, up to INPUT_STOP_WAIT_SEC each, until no pane's input lock is held (#86)."""
+        for lock in list(self.input_locks.values()):
+            if not lock.locked():
+                continue
+            try:
+                await asyncio.wait_for(lock.acquire(), INPUT_STOP_WAIT_SEC)
+            except asyncio.TimeoutError:
+                continue
+            lock.release()
 
     # Checks (#86)
 
@@ -259,7 +292,7 @@ class BrowserServer:
         page = self.pages.get(body.get("page")) if isinstance(body, dict) else None
         if page is None:
             return web.Response(status=400)
-        name, reporter, app = body.get("action"), page.reporter, self.app
+        name, reporter, app = body.get("action"), page.asking(), self.app
         if name == "select":
             page.chosen = body.get("row")
             self.send_state(page)
@@ -275,7 +308,7 @@ class BrowserServer:
             opener = body.get("opener") if body.get("opener") in ("s", "S") else "s"
             app.decide_open(key, opener, printable(str(body.get("text") or "")).strip(), reporter)
         elif name == "go":
-            app.run_worker(self.go(page, body), group="browser")
+            app.run_worker(self.go(page, body, reporter), group="browser")
         elif name == "close-view":
             page.close_view()
         elif name == "message":
@@ -289,19 +322,33 @@ class BrowserServer:
     async def coordination(self, row: str, keep: bool = True):
         """The issue and coordination pane `row` names, or why none, with the issue's windows read again first, as
         `s` reads them, so a session the periodic window check has not found yet is found. With `keep` false (a
-        GET), the windows read answer only this call: the IDE's state is left as it was (#86)."""
+        GET), the windows read answer only this call: the IDE's state is left as it was. A started pane that this
+        read drops, its window gone, is said to be gone, as a go-to on it says (#86)."""
         target = self.app.row_targets.get(row)
         if target is None:
             return self.app.coordination_target(row)
+        key = issue_key(target[0])
         if keep:
-            await self.app.read_windows_of(issue_key(target[0]))
+            _, pane, _ = self.app.coordination_target(row)
+            started = list(self.app.started.get(key, []))
+            await self.app.read_windows_of(key)
+            if pane in started and pane not in self.app.started.get(key, []):
+                try:
+                    await self.app.windows.pane_screen(pane)
+                except WindowError as e:
+                    return key, None, f"{self.app.label(key)}: {pane}: {e}; press s to open it again"
             return self.app.coordination_target(row)
-        _, windows = await self.app.find_windows_of(issue_key(target[0]))
+        _, windows = await self.app.find_windows_of(key)
         return self.app.coordination_target(row, windows)
 
     def input_lock(self, pane: str) -> asyncio.Lock:
         """The lock that lets one input action at a time check and enter into `pane` (#86)."""
         return self.input_locks.setdefault(pane, asyncio.Lock())
+
+    def input_allowed(self) -> None:
+        """Refuse an input that reaches its pane's lock once browser control is stopping (#86)."""
+        if self.stopping:
+            raise InputRefused("browser control stopped: nothing entered")
 
     def work_session(self, body: dict):
         """The run and work session `body` names, and its pane, or why there is none."""
@@ -313,11 +360,13 @@ class BrowserServer:
             return run, session, None, f"{session.name}: no pane"
         return run, session, session.surface, None
 
-    async def go(self, page: Page, body: dict) -> None:
+    async def go(self, page: Page, body: dict, reporter: PageReporter) -> None:
         if "run" in body:
             _, session, pane, why = self.work_session(body)
             if why:
                 page.say(why)
+                return
+            if reporter.closed_since:
                 return
             page.open_view(pane, lambda error: page.say(f"{session.name}: {error}"))
             return
@@ -325,7 +374,7 @@ class BrowserServer:
         if why:
             page.say(why)
         else:
-            await page.reporter.go(key, pane)
+            await reporter.go(key, pane)
 
     async def message_done(self, page: Page, body: dict) -> None:
         """A message action, then the page is told it ended, so its Send is offered again (#86)."""
@@ -352,6 +401,7 @@ class BrowserServer:
             return
         try:
             async with self.input_lock(pane):
+                self.input_allowed()
                 await enter_message(self.app.windows, pane, text)
         except (InputRefused, WindowError) as e:
             page.say(f"{label}: {e}")
@@ -370,6 +420,7 @@ class BrowserServer:
             return
         try:
             async with self.input_lock(pane):
+                self.input_allowed()
                 await answer_prompt(self.app.windows, pane, key)
         except NoPrompt:
             page.say(f"no prompt on {name}'s screen")
@@ -393,8 +444,9 @@ class BrowserServer:
         try:
             screen = await self.app.windows.pane_screen(pane)
         except WindowError as e:
-            # A GET changes no state: the pane is dropped from its issue by an action on it (a go-to, a message, keys)
-            # or the next window check, not by this read (#86).
+            # A GET leaves the session state as it was (the started panes, the windows found, the rows, the marks):
+            # the pane is dropped from its issue by an action on it (a go-to, a message, keys) or the next window
+            # check, not by this read (#86).
             return {"error": f"{self.app.label(key)}: {pane}: {e}"}
         session_id = await self.app.windows.session_id(pane)
         if not session_id:
