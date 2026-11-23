@@ -1,5 +1,7 @@
 """The IDE screen: issues, the selected issue's run, and its sessions."""
 import argparse
+import asyncio
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -11,6 +13,7 @@ from textual.containers import Horizontal, Vertical
 from textual.binding import Binding
 from textual.css.query import NoMatches
 from rich.cells import cell_len
+from rich.style import Style
 from rich.text import Text
 from textual.timer import Timer
 from textual.widgets import DataTable, Footer, Input, Static
@@ -53,6 +56,17 @@ NO_WORKSPACE = "no workspace"
 RUN_REFRESH_SEC = 5.0
 # Browser control runs on this Python or later, the oldest aiohttp >= 3.14.5 supports (#86).
 BROWSER_PYTHON = (3, 10)
+# What a click on `open` runs to open the browser page in the system's default web browser: a child Python that
+# reads the address from its stdin and hands it to webbrowser.open, so the address is in none of its arguments. It
+# runs in its own session with its output to /dev/null, so neither it nor what it starts draws on the screen, and
+# it is not waited on, so the IDE neither freezes nor waits for it at quit (#89).
+OPEN_SCRIPT = "import sys, webbrowser; sys.exit(0 if webbrowser.open(sys.stdin.read().strip()) else 1)"
+OPEN_COMMAND = [sys.executable, "-I", "-c", OPEN_SCRIPT]
+# How long the IDE watches an opener's exit status: one still running then (a browser BROWSER names, which
+# webbrowser waits on for its whole life) has not failed (#89).
+OPEN_WAIT_SEC = 3.0
+OPEN_POLL_SEC = 0.1
+OPEN_FAILED = "browser: could not open the page; its address is above"
 # The open issues are also read again on this interval, so an issue a merge closed leaves the list without a
 # key press (about 60 gh calls an hour), and when a step changes (see show_runs).
 ISSUE_REFRESH_SEC = 60.0
@@ -72,7 +86,7 @@ WAITING_INPUT = "waiting-input"
 # issue found, the state file not written) are shown first on the status line, so a narrow line does not cut
 # them off, and go NOTICE_SEC after they are set (#26). The other messages say what is true now (the counts, the
 # version, a read error until the next read succeeds) and stay while it is.
-NOTICE_SLOTS = ("start", "workspace", "windows", "focus", "find", "state")
+NOTICE_SLOTS = ("start", "workspace", "windows", "focus", "find", "state", "open")
 NOTICE_SEC = 10.0
 ISSUE_COLUMNS: List[ColumnSpec] = [("", "run", 1), ("#", "number", 4), ("Title", "title", None)]
 # For every workspace, the number goes with the title, so a workspace's name has the room of both.
@@ -1742,16 +1756,25 @@ class IdeApp(App):
                   f"{several} sessions" if several else run.name if run else "no run"]
         parts += [m for s, m in self.messages.items() if m and s not in NOTICE_SLOTS and s != "browser"]
         browser = self.messages.get("browser")
+        # Built as Text, never as markup, so no message text (from gh, tmux, a window name) is styled or becomes a
+        # click action; only the IDE's own `open` carries one (#89).
+        line = Text(no_wrap=True, overflow="ellipsis")
         try:
             status = self.query_one("#status", Static)
             if browser:
                 # Browser control's address, or why it could not start, on a row of its own above the rest, so a
-                # notice or the rest of the line never pushes it out of a 124-column screen (#86).
+                # notice or the rest of the line never pushes it out of a 124-column screen (#86). While it serves,
+                # the row starts with `open`, so a narrow screen cuts the address before it (#89).
                 status.add_class("with-browser")
-                status.update(Text(browser + "\n" + "  |  ".join(parts), no_wrap=True, overflow="ellipsis"))
+                if self.browser is not None and browser == f"browser {self.browser.url}":
+                    line.append("open", Style(bold=True, underline=True) + Style.from_meta({"@click": "app.open_page"}))
+                    line.append("  ")
+                line.append(browser)
+                line.append("\n")
             else:
                 status.remove_class("with-browser")
-                status.update("  |  ".join(parts))
+            line.append("  |  ".join(parts))
+            status.update(line)
         except NoMatches:
             pass  # the app is closing (a timer can fire meanwhile): its widgets are gone
 
@@ -1807,10 +1830,37 @@ class IdeApp(App):
         self.set_message("browser", f"browser {server.url}")
 
     async def stop_browser(self) -> None:
+        # The address and `open` go as the stop begins, which can wait for an input under way (#89).
         server, self.browser = self.browser, None
+        self.set_message("browser", "")
         if server is not None:
             await server.stop()
-        self.set_message("browser", "")
+
+    def action_open_page(self) -> None:
+        """A click on `open`: the browser page's address, as it is now, to the system's opener (#89)."""
+        if self.browser is None:
+            return
+        url = self.browser.url
+        try:
+            child = subprocess.Popen(list(OPEN_COMMAND), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            self.set_message("open", OPEN_FAILED)
+            return
+        try:
+            child.stdin.write(url.encode())
+            child.stdin.close()
+        except OSError:
+            pass  # the child ended already: its exit status says how (#89)
+        self.run_worker(self.watch_opener(child), group="open")
+
+    async def watch_opener(self, child: subprocess.Popen) -> None:
+        """Say so when the opener fails within OPEN_WAIT_SEC; neither wait for it longer nor stop it (#89)."""
+        end = time.monotonic() + OPEN_WAIT_SEC
+        while child.poll() is None and time.monotonic() < end:
+            await asyncio.sleep(OPEN_POLL_SEC)
+        if child.returncode not in (None, 0):
+            self.set_message("open", OPEN_FAILED)
 
     async def action_quit(self) -> None:
         await self.stop_browser()
