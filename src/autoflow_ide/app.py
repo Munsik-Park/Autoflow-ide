@@ -1,6 +1,7 @@
 """The IDE screen: issues, the selected issue's run, and its sessions."""
 import argparse
 import asyncio
+import os
 import subprocess
 import sys
 import time
@@ -56,14 +57,13 @@ NO_WORKSPACE = "no workspace"
 RUN_REFRESH_SEC = 5.0
 # Browser control runs on this Python or later, the oldest aiohttp >= 3.14.5 supports (#86).
 BROWSER_PYTHON = (3, 10)
-# What a click on `open` runs to open the browser page in the system's default web browser: a child Python that
-# reads the address from its stdin and hands it to webbrowser.open, so the address is in none of its arguments. It
-# runs in its own session with its output to /dev/null, so neither it nor what it starts draws on the screen, and
-# it is not waited on, so the IDE neither freezes nor waits for it at quit (#89).
-OPEN_SCRIPT = "import sys, webbrowser; sys.exit(0 if webbrowser.open(sys.stdin.read().strip()) else 1)"
-OPEN_COMMAND = [sys.executable, "-I", "-c", OPEN_SCRIPT]
-# How long the IDE watches an opener's exit status: one still running then (a browser BROWSER names, which
-# webbrowser waits on for its whole life) has not failed (#89).
+# What a click on `open` runs to open the browser page in the system's default web browser: macOS's osascript, by
+# its absolute path, reading `open location "<address>"` on its stdin, so the address is in no process's arguments.
+# It runs in its own session with its output to /dev/null, so nothing it prints draws on the screen, and it is not
+# waited on, so the IDE neither freezes nor waits for it at quit (#89).
+OPEN_COMMAND = ["/usr/bin/osascript"]
+# How long the IDE watches the opener's exit status: one still running then (osascript waiting for a browser that
+# starts cold) has not failed (#89).
 OPEN_WAIT_SEC = 3.0
 OPEN_POLL_SEC = 0.1
 OPEN_FAILED = "browser: could not open the page; its address is above"
@@ -100,6 +100,18 @@ SESSION_COLUMNS: List[ColumnSpec] = [("Session", "name", 7), ("State", "state", 
 SESSION_INDENT = "└ "
 # show_issue's default: keep the session shown when the issue stays the same (#85).
 KEEP = object()
+
+
+def page_opener_offered() -> bool:
+    """Whether `open` is offered: on macOS with no BROWSER in the environment, where the opener takes the address on
+    its stdin. Elsewhere the opener would take it in its arguments, which other OS users can read (#89)."""
+    return sys.platform == "darwin" and "BROWSER" not in os.environ
+
+
+def open_script(url: str) -> str:
+    """The AppleScript that opens `url` in the default web browser, with the characters an AppleScript string
+    escapes written as URL escapes (#89)."""
+    return 'open location "%s"' % url.replace("\\", "%5C").replace('"', "%22")
 
 
 def issue_key(issue: Issue) -> IssueKey:
@@ -1764,9 +1776,10 @@ class IdeApp(App):
             if browser:
                 # Browser control's address, or why it could not start, on a row of its own above the rest, so a
                 # notice or the rest of the line never pushes it out of a 124-column screen (#86). While it serves,
-                # the row starts with `open`, so a narrow screen cuts the address before it (#89).
+                # where `open` is offered, the row starts with it, so a narrow screen cuts the address before it (#89).
                 status.add_class("with-browser")
-                if self.browser is not None and browser == f"browser {self.browser.url}":
+                if (self.browser is not None and browser == f"browser {self.browser.url}"
+                        and page_opener_offered()):
                     line.append("open", Style(bold=True, underline=True) + Style.from_meta({"@click": "app.open_page"}))
                     line.append("  ")
                 line.append(browser)
@@ -1838,9 +1851,9 @@ class IdeApp(App):
 
     def action_open_page(self) -> None:
         """A click on `open`: the browser page's address, as it is now, to the system's opener (#89)."""
-        if self.browser is None:
+        if self.browser is None or not page_opener_offered():
             return
-        url = self.browser.url
+        script = open_script(self.browser.url)
         try:
             child = subprocess.Popen(list(OPEN_COMMAND), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL, start_new_session=True)
@@ -1848,7 +1861,7 @@ class IdeApp(App):
             self.set_message("open", OPEN_FAILED)
             return
         try:
-            child.stdin.write(url.encode())
+            child.stdin.write(script.encode())
             child.stdin.close()
         except OSError:
             pass  # the child ended already: its exit status says how (#89)
